@@ -1,0 +1,22 @@
+[package]
+name = "agentgate-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "agentgate"
+path = "src/main.rs"
+
+[dependencies]
+agentgate-core = { path = "../agentgate-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+
+[[test]]
+name = "stdio_proxy_test"
+path = "../../tests/integration/stdio_proxy_test.rs"

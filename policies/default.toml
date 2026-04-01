@@ -1,0 +1,6 @@
+# AgentGate Default Policy
+# Phase 2 will implement full policy evaluation
+
+[metadata]
+name = "default"
+version = "1.0"
