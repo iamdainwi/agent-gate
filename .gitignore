@@ -1,4 +1,13 @@
 /target
 /.claude
 /.idea
+/dashboard/node_modules
+/dashboard/dist
+/dashboard/.env
+/dashboard/.env.local
+/dashboard/.env.development
+/dashboard/.env.production
+/dashboard/.env.test
+/dashboard/.DS_Store
+/dashboard/.next
 agentgate-roadmap.md

@@ -1,4 +1,5 @@
 use agentgate_core::config::{agentgate_dir, AgentGateConfig, ServerEntry, TransportKind};
+use agentgate_core::dashboard::{spawn_dashboard, DashboardState};
 use agentgate_core::policy::PolicyEngine;
 use agentgate_core::proxy::http::HttpProxy;
 use agentgate_core::proxy::sse::SseProxy;
@@ -38,6 +39,9 @@ enum Commands {
         /// Expose Prometheus metrics on this port (e.g. 9090)
         #[arg(long)]
         metrics_port: Option<u16>,
+        /// Port for the dashboard UI and REST API (default: 7070)
+        #[arg(long)]
+        dashboard_port: Option<u16>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
@@ -58,6 +62,9 @@ enum Commands {
         /// Path to a TOML policy file
         #[arg(long)]
         policy: Option<std::path::PathBuf>,
+        /// Port for the dashboard UI and REST API (default: 7070)
+        #[arg(long)]
+        dashboard_port: Option<u16>,
     },
     /// Query and display logged tool invocations
     Logs {
@@ -87,6 +94,7 @@ async fn main() -> Result<()> {
         Commands::Wrap {
             policy,
             metrics_port,
+            dashboard_port,
             command,
         } => {
             if command.is_empty() {
@@ -105,6 +113,9 @@ async fn main() -> Result<()> {
             if metrics_port.is_some() {
                 config.metrics_port = metrics_port;
             }
+            if dashboard_port.is_some() {
+                config.dashboard_port = dashboard_port;
+            }
             StdioProxy::new(config).run(cmd, args).await?;
         }
 
@@ -114,6 +125,7 @@ async fn main() -> Result<()> {
             port,
             headers,
             policy,
+            dashboard_port,
         } => {
             let kind = match transport.as_str() {
                 "sse" => TransportKind::Sse,
@@ -142,9 +154,20 @@ async fn main() -> Result<()> {
             if policy.is_some() {
                 config.policy_path = policy;
             }
+            if dashboard_port.is_some() {
+                config.dashboard_port = dashboard_port;
+            }
 
             let (policy_engine, rate_limiter, circuit_breaker, storage) =
                 build_shared_components(&config)?;
+
+            let dash_state = DashboardState {
+                db_path: config.db_path.clone(),
+                policy_path: config.policy_path.clone(),
+                policy_engine: policy_engine.clone(),
+                live_tx: storage.live_sender(),
+            };
+            spawn_dashboard(dash_state, config.dashboard_port.unwrap_or(7070))?;
 
             match kind {
                 TransportKind::Sse => {

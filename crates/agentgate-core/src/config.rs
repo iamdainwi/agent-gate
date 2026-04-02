@@ -15,6 +15,9 @@ pub struct AgentGateConfig {
     /// SSE and HTTP transports always expose `/metrics` on their own bind port.
     #[serde(default)]
     pub metrics_port: Option<u16>,
+    /// Port for the REST/WebSocket API and dashboard UI. Defaults to 7070.
+    #[serde(default)]
+    pub dashboard_port: Option<u16>,
     #[serde(default)]
     pub rate_limits: RateLimitConfig,
     #[serde(default)]
@@ -101,6 +104,7 @@ impl Default for AgentGateConfig {
             server_name: "unknown".to_string(),
             policy_path: None,
             metrics_port: None,
+            dashboard_port: None,
             rate_limits: RateLimitConfig::default(),
             circuit_breaker: CircuitBreakerConfig::default(),
             servers: Vec::new(),

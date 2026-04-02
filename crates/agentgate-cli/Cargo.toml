@@ -27,9 +27,15 @@ path = "../../tests/integration/stdio_proxy_test.rs"
 name = "http_proxy_test"
 path = "../../tests/integration/http_proxy_test.rs"
 
+[[test]]
+name = "security_test"
+path = "../../tests/integration/security_test.rs"
+
 [dev-dependencies]
 toml = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
+serde_json = { workspace = true }
+agentgate-core = { path = "../agentgate-core" }

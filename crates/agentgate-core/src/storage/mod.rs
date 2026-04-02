@@ -1,5 +1,6 @@
 pub mod sqlite;
 
 pub use sqlite::{
-    InvocationFilter, InvocationRecord, InvocationStatus, StorageReader, StorageWriter,
+    open_connection, row_to_record, InvocationFilter, InvocationRecord, InvocationStatus,
+    StorageReader, StorageWriter,
 };

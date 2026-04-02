@@ -1,8 +1,9 @@
 use crate::config::AgentGateConfig;
+use crate::dashboard::{spawn_dashboard, DashboardState};
 use crate::logging::structured::{log_event, Direction, LogEvent};
 use crate::metrics;
 use crate::policy::PolicyEngine;
-use crate::protocol::jsonrpc::{JsonRpcMessage, JsonRpcRequest};
+use crate::protocol::jsonrpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse};
 use crate::protocol::mcp;
 use crate::proxy::evaluation::{evaluate_tool_call, EvalOutcome};
 use crate::ratelimit::{CircuitBreaker, RateLimiter};
@@ -73,8 +74,19 @@ impl StdioProxy {
             }
         }
 
-        // FIX: Bounded channel (10_000 messages) to prevent memory leaks under high backpressure
-        let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel::<String>(10_000);
+        let dashboard_port = self.config.dashboard_port.unwrap_or(7070);
+        let dash_state = DashboardState {
+            db_path: self.config.db_path.clone(),
+            policy_path: self.config.policy_path.clone(),
+            policy_engine: policy.clone(),
+            live_tx: storage.live_sender(),
+        };
+        spawn_dashboard(dash_state, dashboard_port)?;
+
+        // Bounded channel provides flow control: if the agent reads stdout slowly, backpressure
+        // propagates upstream and we slow down reading from the MCP server — correct behavior
+        // for a synchronous stdio pipeline.
+        let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel::<String>(256);
 
         let stdout_writer = tokio::spawn(async move {
             let mut out = tokio::io::stdout();
@@ -137,11 +149,12 @@ impl StdioProxy {
             }
         };
 
-        let flush = std::time::Duration::from_secs(2);
-        let _ = tokio::time::timeout(flush, task_a).await;
-        let _ = tokio::time::timeout(flush, task_b).await;
-        let _ = tokio::time::timeout(flush, task_c).await;
-        let _ = tokio::time::timeout(flush, stdout_writer).await;
+        // task_a reads from stdin which never yields EOF while the agent is alive; abort it.
+        // task_b may have buffered responses to flush; give it a short grace window.
+        task_a.abort();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task_b).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task_c).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), stdout_writer).await;
 
         if !status.success() {
             std::process::exit(status.code().unwrap_or(1));
@@ -187,6 +200,13 @@ async fn proxy_inbound(
 
         if let JsonRpcMessage::Request(ref req) = msg {
             if req.method == mcp::TOOLS_CALL {
+                // Notifications (id == None) must not be tracked: no response will arrive,
+                // so inserting them into PendingMap would leak memory and inflate active_sessions.
+                if req.id.is_none() {
+                    forward_raw(&mut child_stdin, &line).await?;
+                    continue;
+                }
+
                 let (tool_name, arguments) = extract_params(req);
                 let original_args = arguments.clone();
 
@@ -202,7 +222,6 @@ async fn proxy_inbound(
                 ) {
                     EvalOutcome::Block { response } => {
                         let res_str = serde_json::to_string(&response)?;
-                        // FIX: Await bounded channel sending
                         stdout_tx
                             .send(res_str)
                             .await
@@ -218,7 +237,7 @@ async fn proxy_inbound(
                             line.clone()
                         };
                         metrics::global().active_sessions.inc();
-                        pending.lock().unwrap().insert(
+                        pending.lock().unwrap_or_else(|e| e.into_inner()).insert(
                             id_key(req),
                             PendingCall {
                                 tool_name,
@@ -255,7 +274,7 @@ async fn proxy_response(
             continue;
         }
 
-        match JsonRpcMessage::parse(&line) {
+        let forward_line = match JsonRpcMessage::parse(&line) {
             Ok(msg) => {
                 log_event(&LogEvent {
                     timestamp: Utc::now(),
@@ -263,20 +282,25 @@ async fn proxy_response(
                     message: msg.clone(),
                     raw: line.clone(),
                 });
+                // flush_pending returns the (possibly redacted) line to forward to the agent.
                 flush_pending(
                     &msg,
+                    &line,
                     &pending,
                     policy.as_ref(),
                     &circuit_breaker,
                     &storage,
                     &server_name,
-                );
+                )
             }
-            Err(e) => tracing::warn!("Response parse error: {e}"),
-        }
+            Err(e) => {
+                tracing::warn!("Response parse error: {e}");
+                line.clone()
+            }
+        };
 
         stdout_tx
-            .send(line)
+            .send(forward_line)
             .await
             .map_err(|e| anyhow::anyhow!("Channel error: {e}"))?;
     }
@@ -284,14 +308,12 @@ async fn proxy_response(
     Ok(())
 }
 
+/// Stream child stderr directly to our stderr. Using `copy` avoids line-buffering,
+/// which would OOM if the child emits a large payload without newlines.
 async fn pipe_stderr(child_stderr: tokio::process::ChildStderr) -> Result<()> {
-    let mut reader = BufReader::new(child_stderr).lines();
-    let mut stderr = tokio::io::stderr();
-    while let Some(line) = reader.next_line().await? {
-        stderr.write_all(line.as_bytes()).await?;
-        stderr.write_all(b"\n").await?;
-        stderr.flush().await?;
-    }
+    let mut src = BufReader::new(child_stderr);
+    let mut dst = tokio::io::stderr();
+    tokio::io::copy(&mut src, &mut dst).await?;
     Ok(())
 }
 
@@ -302,21 +324,29 @@ async fn forward_raw(sink: &mut tokio::process::ChildStdin, line: &str) -> Resul
     Ok(())
 }
 
+/// Process a tool-call response: record metrics, update the circuit breaker, persist to storage,
+/// and return the line to forward to the agent. If a redact policy is active the returned line
+/// has secrets scrubbed from the result field; otherwise the original line is returned unchanged.
 fn flush_pending(
     msg: &JsonRpcMessage,
+    original_line: &str,
     pending: &PendingMap,
     policy: Option<&Arc<PolicyEngine>>,
     circuit_breaker: &CircuitBreaker,
     storage: &StorageWriter,
     server_name: &str,
-) {
+) -> String {
     let JsonRpcMessage::Response(resp) = msg else {
-        return;
+        return original_line.to_string();
     };
 
     let key = resp.id.to_string();
-    let Some(call) = pending.lock().unwrap().remove(&key) else {
-        return;
+    let Some(call) = pending
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&key)
+    else {
+        return original_line.to_string();
     };
 
     let elapsed = call.started_at.elapsed();
@@ -353,11 +383,28 @@ fn flush_pending(
         ));
     m.active_sessions.dec();
 
-    // Scan result through policy redact rules before storing — catches secrets in tool output.
-    let result_to_store = resp.result.as_ref().map(|res| match policy {
-        Some(engine) => engine.redact_output(res),
-        None => res.clone(),
-    });
+    // Apply redaction. If any patterns match, re-serialize the response so the agent never
+    // sees the raw secret — not just the storage layer.
+    let (result_to_store, forward_line) = match (resp.result.as_ref(), policy) {
+        (Some(raw_result), Some(engine)) => {
+            let redacted = engine.redact_output(raw_result);
+            let forward = if redacted != *raw_result {
+                // Reconstruct the JSON-RPC response with the redacted result.
+                let redacted_resp = JsonRpcResponse {
+                    jsonrpc: resp.jsonrpc.clone(),
+                    id: resp.id.clone(),
+                    result: Some(redacted.clone()),
+                    error: resp.error.clone(),
+                };
+                serde_json::to_string(&redacted_resp).unwrap_or_else(|_| original_line.to_string())
+            } else {
+                original_line.to_string()
+            };
+            (Some(redacted), forward)
+        }
+        (Some(raw_result), None) => (Some(raw_result.clone()), original_line.to_string()),
+        (None, _) => (None, original_line.to_string()),
+    };
 
     storage.record(InvocationRecord {
         id: Uuid::new_v4().to_string(),
@@ -372,6 +419,8 @@ fn flush_pending(
         status,
         policy_hit: None,
     });
+
+    forward_line
 }
 
 fn rebuild_call(original: &JsonRpcRequest, new_arguments: Option<Value>) -> JsonRpcRequest {

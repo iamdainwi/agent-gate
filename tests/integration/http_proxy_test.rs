@@ -65,8 +65,21 @@ fn spawn_upstream(listener: TcpListener, router: Router) {
     });
 }
 
-async fn brief_pause() {
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+/// Poll /health with exponential back-off until the proxy is accepting connections.
+/// Avoids the flakiness of a fixed-duration sleep on slow CI machines.
+async fn wait_for_ready(addr: std::net::SocketAddr) {
+    for attempt in 0u32..20 {
+        if reqwest::get(format!("http://{addr}/health"))
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let delay = std::time::Duration::from_millis(5 * (1u64 << attempt.min(6)));
+        tokio::time::sleep(delay).await;
+    }
+    panic!("proxy at {addr} never became ready after 20 attempts");
 }
 
 #[tokio::test]
@@ -81,7 +94,7 @@ async fn http_proxy_forwards_generic_request() {
 
     let proxy = HttpProxy::new(&entry(up_addr, pl_addr.port()), None, rl, cb, storage).unwrap();
     tokio::spawn(proxy.run_with_listener(pl));
-    brief_pause().await;
+    wait_for_ready(pl_addr).await;
 
     let payload = json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}});
     let resp = reqwest::Client::new()
@@ -108,7 +121,7 @@ async fn http_proxy_returns_upstream_response() {
 
     let proxy = HttpProxy::new(&entry(up_addr, pl_addr.port()), None, rl, cb, storage).unwrap();
     tokio::spawn(proxy.run_with_listener(pl));
-    brief_pause().await;
+    wait_for_ready(pl_addr).await;
 
     let resp = reqwest::Client::new()
         .post(format!("http://{pl_addr}"))
@@ -164,7 +177,7 @@ async fn http_proxy_blocks_denied_tool_call() {
     )
     .unwrap();
     tokio::spawn(proxy.run_with_listener(pl));
-    brief_pause().await;
+    wait_for_ready(pl_addr).await;
 
     let resp = reqwest::Client::new()
         .post(format!("http://{pl_addr}"))
@@ -201,7 +214,7 @@ async fn http_proxy_health_endpoint() {
 
     let proxy = HttpProxy::new(&entry(up_addr, pl_addr.port()), None, rl, cb, storage).unwrap();
     tokio::spawn(proxy.run_with_listener(pl));
-    brief_pause().await;
+    wait_for_ready(pl_addr).await;
 
     let resp = reqwest::get(format!("http://{pl_addr}/health"))
         .await

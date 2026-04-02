@@ -136,6 +136,11 @@ impl StorageWriter {
     pub fn subscribe(&self) -> broadcast::Receiver<InvocationRecord> {
         self.live_tx.subscribe()
     }
+
+    /// Return a clone of the broadcast sender for passing to dashboard state.
+    pub fn live_sender(&self) -> broadcast::Sender<InvocationRecord> {
+        self.live_tx.clone()
+    }
 }
 
 /// Synchronous read interface used by `agentgate logs`.
@@ -211,6 +216,12 @@ impl StorageReader {
     }
 }
 
+/// Open a WAL-mode SQLite connection at `db_path`, applying the schema if needed.
+/// Exposed to the dashboard API module so it can open its own read connections.
+pub fn open_connection(db_path: &Path) -> Result<Connection> {
+    open_and_migrate(db_path)
+}
+
 fn open_and_migrate(db_path: &Path) -> Result<Connection> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)
@@ -271,7 +282,7 @@ fn insert_record(conn: &Connection, r: &InvocationRecord) -> Result<()> {
     Ok(())
 }
 
-fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<InvocationRecord> {
+pub fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<InvocationRecord> {
     let ts_str: String = row.get(1)?;
     let timestamp = DateTime::parse_from_rfc3339(&ts_str)
         .map(|dt| dt.with_timezone(&Utc))

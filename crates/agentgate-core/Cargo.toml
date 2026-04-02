@@ -21,3 +21,13 @@ futures-util = { workspace = true }
 tokio-stream = { workspace = true }
 prometheus = { workspace = true }
 tower-http = { workspace = true }
+
+[[bench]]
+name = "proxy_eval"
+harness = false
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+uuid = { workspace = true }
+toml = { workspace = true }
