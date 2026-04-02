@@ -157,12 +157,14 @@ impl StorageReader {
              LIMIT {limit}"
         );
 
-        let params_refs: Vec<&dyn rusqlite::ToSql> = positional.iter().map(|b| b.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            positional.iter().map(|b| b.as_ref()).collect();
 
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_refs.as_slice(), row_to_record)?;
 
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to query invocations")
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to query invocations")
     }
 
     /// Export all records matching the filter as JSONL to the given writer.

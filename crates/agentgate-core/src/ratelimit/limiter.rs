@@ -79,8 +79,14 @@ mod tests {
     #[test]
     fn global_throttles_across_tools() {
         let limiter = RateLimiter::new(config_with(2, 1000));
-        assert!(matches!(limiter.check("read_file"), RateLimitDecision::Allow));
-        assert!(matches!(limiter.check("write_file"), RateLimitDecision::Allow));
+        assert!(matches!(
+            limiter.check("read_file"),
+            RateLimitDecision::Allow
+        ));
+        assert!(matches!(
+            limiter.check("write_file"),
+            RateLimitDecision::Allow
+        ));
         assert!(matches!(
             limiter.check("bash"),
             RateLimitDecision::GlobalLimitExceeded { .. }

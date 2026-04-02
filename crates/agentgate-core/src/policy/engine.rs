@@ -1,4 +1,4 @@
-use super::condition::{Expr, EvalCtx};
+use super::condition::{EvalCtx, Expr};
 use super::rules::{PolicyFile, PolicyRule, RuleAction};
 use anyhow::{Context, Result};
 use regex::Regex;
@@ -93,9 +93,11 @@ impl PolicyEngine {
                 RuleAction::Deny => {
                     return PolicyDecision::Deny {
                         rule_id: cr.rule.id.clone(),
-                        message: cr.rule.message.clone().unwrap_or_else(|| {
-                            format!("Blocked by policy rule '{}'", cr.rule.id)
-                        }),
+                        message: cr
+                            .rule
+                            .message
+                            .clone()
+                            .unwrap_or_else(|| format!("Blocked by policy rule '{}'", cr.rule.id)),
                     };
                 }
 
@@ -139,15 +141,11 @@ impl PolicyEngine {
 
     pub fn spawn_watcher(engine: Arc<Self>, path: PathBuf) {
         tokio::spawn(async move {
-            let mut last_modified = std::fs::metadata(&path)
-                .and_then(|m| m.modified())
-                .ok();
+            let mut last_modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
             let mut interval = tokio::time::interval(Duration::from_millis(500));
             loop {
                 interval.tick().await;
-                let current = std::fs::metadata(&path)
-                    .and_then(|m| m.modified())
-                    .ok();
+                let current = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
                 if current != last_modified {
                     match engine.reload(&path) {
                         Ok(()) => tracing::info!("Policy reloaded: {}", path.display()),
@@ -180,8 +178,7 @@ fn compile_rule(rule: PolicyRule) -> Result<CompiledRule> {
         .pattern
         .as_deref()
         .map(|p| {
-            Regex::new(p)
-                .with_context(|| format!("Invalid redact pattern in rule '{}'", rule.id))
+            Regex::new(p).with_context(|| format!("Invalid redact pattern in rule '{}'", rule.id))
         })
         .transpose()?;
 
@@ -204,9 +201,11 @@ fn redact_value(value: &Value, re: &Regex, replacement: &str) -> Value {
                 .map(|(k, v)| (k.clone(), redact_value(v, re, replacement)))
                 .collect(),
         ),
-        Value::Array(arr) => {
-            Value::Array(arr.iter().map(|v| redact_value(v, re, replacement)).collect())
-        }
+        Value::Array(arr) => Value::Array(
+            arr.iter()
+                .map(|v| redact_value(v, re, replacement))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }

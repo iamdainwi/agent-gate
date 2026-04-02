@@ -147,8 +147,7 @@ async fn http_proxy_blocks_denied_tool_call() {
         }],
     };
 
-    let tmp = std::env::temp_dir()
-        .join(format!("policy-{}.toml", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!("policy-{}.toml", uuid::Uuid::new_v4()));
     std::fs::write(&tmp, toml::to_string(&policy_file).unwrap()).unwrap();
     let engine = PolicyEngine::load(&tmp).unwrap();
 
@@ -156,8 +155,14 @@ async fn http_proxy_blocks_denied_tool_call() {
     let pl_addr = pl.local_addr().unwrap();
     let (rl, cb, storage) = make_components();
 
-    let proxy =
-        HttpProxy::new(&entry(up_addr, pl_addr.port()), Some(engine), rl, cb, storage).unwrap();
+    let proxy = HttpProxy::new(
+        &entry(up_addr, pl_addr.port()),
+        Some(engine),
+        rl,
+        cb,
+        storage,
+    )
+    .unwrap();
     tokio::spawn(proxy.run_with_listener(pl));
     brief_pause().await;
 
@@ -175,7 +180,10 @@ async fn http_proxy_blocks_denied_tool_call() {
 
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert!(body["error"].is_object(), "Expected JSON-RPC error, got: {body}");
+    assert!(
+        body["error"].is_object(),
+        "Expected JSON-RPC error, got: {body}"
+    );
     assert_eq!(body["error"]["message"], "bash is blocked");
 
     std::fs::remove_file(tmp).ok();

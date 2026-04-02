@@ -49,10 +49,7 @@ impl Expr {
                 re.is_match(s)
             }
             Expr::ArgumentsContainPattern { re } => {
-                let s = ctx
-                    .arguments
-                    .map(|v| v.to_string())
-                    .unwrap_or_default();
+                let s = ctx.arguments.map(|v| v.to_string()).unwrap_or_default();
                 re.is_match(&s)
             }
             Expr::TimeHour { op, value } => {
@@ -276,7 +273,9 @@ impl Parser {
                         self.advance();
                         let pattern = match self.advance() {
                             Tok::Str(s) => s,
-                            t => bail!("Expected quoted pattern after 'contains_pattern', got {t:?}"),
+                            t => {
+                                bail!("Expected quoted pattern after 'contains_pattern', got {t:?}")
+                            }
                         };
                         let re = Regex::new(&pattern)
                             .map_err(|e| anyhow::anyhow!("Invalid regex '{pattern}': {e}"))?;
@@ -317,7 +316,10 @@ mod tests {
         // SAFETY: the Value is owned by the test and lives for the duration
         // of the expression evaluation within the test.
         let args = Box::leak(Box::new(args));
-        EvalCtx { arguments: Some(args), now: Utc::now() }
+        EvalCtx {
+            arguments: Some(args),
+            now: Utc::now(),
+        }
     }
 
     #[test]
@@ -339,7 +341,8 @@ mod tests {
 
     #[test]
     fn or_combinator() {
-        let expr = Expr::parse("arguments.cmd matches '(rm)' or arguments.cmd matches '(DROP)'").unwrap();
+        let expr =
+            Expr::parse("arguments.cmd matches '(rm)' or arguments.cmd matches '(DROP)'").unwrap();
         let ctx = ctx_with_args(json!({ "cmd": "DROP TABLE users" }));
         assert!(expr.evaluate(&ctx));
     }

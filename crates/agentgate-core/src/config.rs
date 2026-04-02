@@ -106,8 +106,7 @@ impl AgentGateConfig {
     pub fn load_toml(path: &std::path::Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read config: {}", path.display()))?;
-        toml::from_str(&content)
-            .with_context(|| format!("Invalid config TOML: {}", path.display()))
+        toml::from_str(&content).with_context(|| format!("Invalid config TOML: {}", path.display()))
     }
 }
 

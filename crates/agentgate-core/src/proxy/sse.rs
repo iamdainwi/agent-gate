@@ -124,10 +124,7 @@ async fn sse_handler(State(state): State<SseState>) -> impl IntoResponse {
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-async fn pump_upstream_sse(
-    state: SseState,
-    tx: mpsc::Sender<Result<Event, Infallible>>,
-) {
+async fn pump_upstream_sse(state: SseState, tx: mpsc::Sender<Result<Event, Infallible>>) {
     if let Err(e) = try_pump_upstream_sse(state, tx).await {
         tracing::error!("Upstream SSE pump failed: {e}");
     }
@@ -197,27 +194,17 @@ async fn try_pump_upstream_sse(
     Ok(())
 }
 
-async fn message_handler(
-    State(state): State<SseState>,
-    body: axum::body::Bytes,
-) -> Response {
+async fn message_handler(State(state): State<SseState>, body: axum::body::Bytes) -> Response {
     match try_message_handler(state, body).await {
         Ok(resp) => resp,
         Err(e) => {
             tracing::error!("Message handler error: {e}");
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                e.to_string(),
-            )
-                .into_response()
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
 }
 
-async fn try_message_handler(
-    state: SseState,
-    body: axum::body::Bytes,
-) -> Result<Response> {
+async fn try_message_handler(state: SseState, body: axum::body::Bytes) -> Result<Response> {
     let raw = std::str::from_utf8(&body).context("Non-UTF8 request body")?;
 
     let msg = JsonRpcMessage::parse(raw).ok();
@@ -245,7 +232,9 @@ async fn try_message_handler(
                     )
                         .into_response());
                 }
-                EvalOutcome::Allow { arguments: allowed_args } => {
+                EvalOutcome::Allow {
+                    arguments: allowed_args,
+                } => {
                     state.storage.record(make_record(
                         &tool_name,
                         allowed_args,
@@ -276,7 +265,10 @@ async fn try_message_handler(
 
     let status = axum::http::StatusCode::from_u16(upstream_resp.status().as_u16())
         .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-    let resp_body = upstream_resp.bytes().await.context("Failed to read upstream response")?;
+    let resp_body = upstream_resp
+        .bytes()
+        .await
+        .context("Failed to read upstream response")?;
 
     Ok((status, resp_body).into_response())
 }
@@ -320,7 +312,9 @@ fn base_url(url: &str) -> &str {
     url.rfind('/').map(|i| &url[..i]).unwrap_or(url)
 }
 
-fn extract_params(req: &crate::protocol::jsonrpc::JsonRpcRequest) -> (String, Option<serde_json::Value>) {
+fn extract_params(
+    req: &crate::protocol::jsonrpc::JsonRpcRequest,
+) -> (String, Option<serde_json::Value>) {
     let Some(params) = &req.params else {
         return ("unknown".to_string(), None);
     };

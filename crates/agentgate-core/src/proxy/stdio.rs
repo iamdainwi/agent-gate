@@ -179,10 +179,15 @@ async fn proxy_inbound(
                     EvalOutcome::Block { response } => {
                         let res_str = serde_json::to_string(&response)?;
                         // FIX: Await bounded channel sending
-                        stdout_tx.send(res_str).await.map_err(|e| anyhow::anyhow!("Channel error: {e}"))?;
+                        stdout_tx
+                            .send(res_str)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("Channel error: {e}"))?;
                         continue;
                     }
-                    EvalOutcome::Allow { arguments: allowed_args } => {
+                    EvalOutcome::Allow {
+                        arguments: allowed_args,
+                    } => {
                         let forward_line = if allowed_args != original_args {
                             serde_json::to_string(&rebuild_call(req, allowed_args.clone()))?
                         } else {
@@ -238,7 +243,10 @@ async fn proxy_response(
         }
 
         // FIX: Await bounded channel sending
-        stdout_tx.send(line).await.map_err(|e| anyhow::anyhow!("Channel error: {e}"))?;
+        stdout_tx
+            .send(line)
+            .await
+            .map_err(|e| anyhow::anyhow!("Channel error: {e}"))?;
     }
 
     Ok(())
@@ -296,7 +304,10 @@ fn flush_pending(
     let result_to_store = if let Some(res) = &resp.result {
         let res_str = serde_json::to_string(res).unwrap_or_default();
         if res_str.len() > 2048 {
-            Some(Value::String(format!("{}... [truncated]", &res_str[..2048])))
+            Some(Value::String(format!(
+                "{}... [truncated]",
+                &res_str[..2048]
+            )))
         } else {
             Some(res.clone())
         }

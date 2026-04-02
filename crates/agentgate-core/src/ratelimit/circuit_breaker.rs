@@ -42,10 +42,12 @@ impl CircuitBreaker {
 
     pub fn check(&self, tool_name: &str) -> CircuitDecision {
         let mut tools = self.tools.lock().unwrap();
-        let state = tools.entry(tool_name.to_string()).or_insert_with(|| ToolState {
-            circuit: CircuitState::Closed,
-            error_window: VecDeque::new(),
-        });
+        let state = tools
+            .entry(tool_name.to_string())
+            .or_insert_with(|| ToolState {
+                circuit: CircuitState::Closed,
+                error_window: VecDeque::new(),
+            });
 
         match &state.circuit {
             CircuitState::Closed => CircuitDecision::Allow { is_probe: false },
@@ -57,8 +59,7 @@ impl CircuitBreaker {
                     tracing::info!(tool = %tool_name, "Circuit half-open, allowing probe");
                     CircuitDecision::Allow { is_probe: true }
                 } else {
-                    let remaining =
-                        (cooldown - opened_at.elapsed()).as_secs().saturating_add(1);
+                    let remaining = (cooldown - opened_at.elapsed()).as_secs().saturating_add(1);
                     CircuitDecision::Open {
                         retry_after_secs: remaining,
                     }
@@ -87,10 +88,12 @@ impl CircuitBreaker {
 
     pub fn on_error(&self, tool_name: &str) {
         let mut tools = self.tools.lock().unwrap();
-        let state = tools.entry(tool_name.to_string()).or_insert_with(|| ToolState {
-            circuit: CircuitState::Closed,
-            error_window: VecDeque::new(),
-        });
+        let state = tools
+            .entry(tool_name.to_string())
+            .or_insert_with(|| ToolState {
+                circuit: CircuitState::Closed,
+                error_window: VecDeque::new(),
+            });
 
         let now = Instant::now();
         let window = Duration::from_secs(self.config.window_seconds);
@@ -163,7 +166,10 @@ mod tests {
         cb.on_error("bash");
         // cooldown = 0 means it immediately transitions to HalfOpen on next check
         let decision = cb.check("bash");
-        assert!(matches!(decision, CircuitDecision::Allow { is_probe: true }));
+        assert!(matches!(
+            decision,
+            CircuitDecision::Allow { is_probe: true }
+        ));
         cb.on_success("bash");
         assert_eq!(cb.state_kind("bash"), CircuitStateKind::Closed);
     }

@@ -11,7 +11,10 @@ use std::sync::Arc;
 use tabled::{Table, Tabled};
 
 #[derive(Parser)]
-#[command(name = "agentgate", about = "AI Agent Security & Observability Gateway")]
+#[command(
+    name = "agentgate",
+    about = "AI Agent Security & Observability Gateway"
+)]
 struct Cli {
     /// Path to a config TOML file [default: ~/.agentgate/config.toml]
     #[arg(long, global = true)]
@@ -95,7 +98,13 @@ async fn main() -> Result<()> {
             StdioProxy::new(config).run(cmd, args).await?;
         }
 
-        Commands::Serve { transport, upstream, port, headers, policy } => {
+        Commands::Serve {
+            transport,
+            upstream,
+            port,
+            headers,
+            policy,
+        } => {
             let kind = match transport.as_str() {
                 "sse" => TransportKind::Sse,
                 "http" => TransportKind::Http,
@@ -129,22 +138,43 @@ async fn main() -> Result<()> {
 
             match kind {
                 TransportKind::Sse => {
-                    SseProxy::new(&entry, policy_engine, rate_limiter, circuit_breaker, storage)?
-                        .run()
-                        .await?;
+                    SseProxy::new(
+                        &entry,
+                        policy_engine,
+                        rate_limiter,
+                        circuit_breaker,
+                        storage,
+                    )?
+                    .run()
+                    .await?;
                 }
                 TransportKind::Http => {
-                    HttpProxy::new(&entry, policy_engine, rate_limiter, circuit_breaker, storage)?
-                        .run()
-                        .await?;
+                    HttpProxy::new(
+                        &entry,
+                        policy_engine,
+                        rate_limiter,
+                        circuit_breaker,
+                        storage,
+                    )?
+                    .run()
+                    .await?;
                 }
                 TransportKind::Stdio => bail!("Use `agentgate wrap` for stdio transport"),
             }
         }
 
-        Commands::Logs { tool, status, limit, jsonl } => {
+        Commands::Logs {
+            tool,
+            status,
+            limit,
+            jsonl,
+        } => {
             let reader = StorageReader::open(&config.db_path)?;
-            let filter = InvocationFilter { tool, status, limit };
+            let filter = InvocationFilter {
+                tool,
+                status,
+                limit,
+            };
             if jsonl {
                 reader.export_jsonl(&filter, &mut std::io::stdout())?;
             } else {
@@ -161,7 +191,12 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-type SharedComponents = (Option<Arc<PolicyEngine>>, Arc<RateLimiter>, Arc<CircuitBreaker>, StorageWriter);
+type SharedComponents = (
+    Option<Arc<PolicyEngine>>,
+    Arc<RateLimiter>,
+    Arc<CircuitBreaker>,
+    StorageWriter,
+);
 
 fn build_shared_components(config: &AgentGateConfig) -> Result<SharedComponents> {
     let policy = config
@@ -220,7 +255,10 @@ fn print_table(records: &[agentgate_core::storage::InvocationRecord]) {
             server_name: r.server_name.clone(),
             tool_name: r.tool_name.clone(),
             status: r.status.as_str().to_string(),
-            latency_ms: r.latency_ms.map(|l| l.to_string()).unwrap_or_else(|| "-".to_string()),
+            latency_ms: r
+                .latency_ms
+                .map(|l| l.to_string())
+                .unwrap_or_else(|| "-".to_string()),
             policy_hit: r.policy_hit.clone().unwrap_or_else(|| "-".to_string()),
         })
         .collect();

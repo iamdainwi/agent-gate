@@ -152,7 +152,9 @@ async fn try_proxy(state: HttpState, req: Request) -> Result<Response> {
                             )
                                 .into_response());
                         }
-                        EvalOutcome::Allow { arguments: allowed_args } => {
+                        EvalOutcome::Allow {
+                            arguments: allowed_args,
+                        } => {
                             let upstream_resp =
                                 forward(&state, &method, &path, &in_headers, body_bytes.clone())
                                     .await?;
@@ -199,8 +201,8 @@ async fn forward(
 ) -> Result<reqwest::Response> {
     let upstream = format!("{}{}", state.upstream_url.trim_end_matches('/'), path);
 
-    let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
-        .context("Invalid HTTP method")?;
+    let reqwest_method =
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).context("Invalid HTTP method")?;
 
     let mut req = state
         .http_client
@@ -210,7 +212,10 @@ async fn forward(
     // Forward a safe subset of inbound headers.
     for (name, value) in in_headers {
         let n = name.as_str().to_lowercase();
-        if matches!(n.as_str(), "content-type" | "accept" | "authorization" | "x-request-id") {
+        if matches!(
+            n.as_str(),
+            "content-type" | "accept" | "authorization" | "x-request-id"
+        ) {
             if let Ok(v) = value.to_str() {
                 req = req.header(name.as_str(), v);
             }
@@ -245,7 +250,10 @@ async fn build_axum_response(upstream: reqwest::Response) -> Result<Response> {
         }
     }
 
-    let body = upstream.bytes().await.context("Failed to read upstream body")?;
+    let body = upstream
+        .bytes()
+        .await
+        .context("Failed to read upstream body")?;
     Ok((status, header_map, body).into_response())
 }
 
@@ -268,12 +276,9 @@ fn extract_params(
     (tool_name, arguments)
 }
 
-pub fn error_response_body(
-    id: Option<&serde_json::Value>,
-    code: i64,
-    message: &str,
-) -> String {
+pub fn error_response_body(id: Option<&serde_json::Value>, code: i64, message: &str) -> String {
     let id_owned = id.cloned();
-    serde_json::to_string(&error_resp(&id_owned, code, message, None))
-        .unwrap_or_else(|_| r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal error"}}"#.to_string())
+    serde_json::to_string(&error_resp(&id_owned, code, message, None)).unwrap_or_else(|_| {
+        r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal error"}}"#.to_string()
+    })
 }
