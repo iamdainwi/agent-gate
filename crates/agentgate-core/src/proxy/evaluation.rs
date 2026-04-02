@@ -75,7 +75,10 @@ pub fn evaluate_tool_call(
                     response: error_resp(req_id, -32029, &msg, None),
                 };
             }
-            PolicyDecision::Redact { rule_id, arguments: redacted } => {
+            PolicyDecision::Redact {
+                rule_id,
+                arguments: redacted,
+            } => {
                 tracing::info!(rule_id = %rule_id, tool = %tool_name, "Arguments redacted");
                 return EvalOutcome::Allow {
                     arguments: Some(redacted),
@@ -115,7 +118,10 @@ pub fn evaluate_tool_call(
                 ),
             };
         }
-        RateLimitDecision::ToolLimitExceeded { tool, retry_after_secs } => {
+        RateLimitDecision::ToolLimitExceeded {
+            tool,
+            retry_after_secs,
+        } => {
             let msg = format!(
                 "Rate limit exceeded for tool '{tool}'. \
                  WAIT {retry_after_secs} SECONDS before calling this tool again. \

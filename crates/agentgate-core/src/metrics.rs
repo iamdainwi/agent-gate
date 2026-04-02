@@ -1,5 +1,8 @@
 use axum::response::IntoResponse;
-use prometheus::{CounterVec, Encoder, GaugeVec, HistogramOpts, HistogramVec, IntGauge, Opts, Registry, TextEncoder};
+use prometheus::{
+    CounterVec, Encoder, GaugeVec, HistogramOpts, HistogramVec, IntGauge, Opts, Registry,
+    TextEncoder,
+};
 use std::sync::OnceLock;
 
 pub struct Metrics {
@@ -25,7 +28,10 @@ impl Metrics {
         let registry = Registry::new();
 
         let tool_calls_total = CounterVec::new(
-            Opts::new("agentgate_tool_calls_total", "Total tool invocations by outcome"),
+            Opts::new(
+                "agentgate_tool_calls_total",
+                "Total tool invocations by outcome",
+            ),
             &["tool", "status"],
         )
         .expect("static metric definition is valid");
@@ -73,12 +79,24 @@ impl Metrics {
         )
         .expect("static metric definition is valid");
 
-        registry.register(Box::new(tool_calls_total.clone())).expect("registration");
-        registry.register(Box::new(tool_call_duration_seconds.clone())).expect("registration");
-        registry.register(Box::new(policy_denials_total.clone())).expect("registration");
-        registry.register(Box::new(rate_limit_hits_total.clone())).expect("registration");
-        registry.register(Box::new(circuit_breaker_state.clone())).expect("registration");
-        registry.register(Box::new(active_sessions.clone())).expect("registration");
+        registry
+            .register(Box::new(tool_calls_total.clone()))
+            .expect("registration");
+        registry
+            .register(Box::new(tool_call_duration_seconds.clone()))
+            .expect("registration");
+        registry
+            .register(Box::new(policy_denials_total.clone()))
+            .expect("registration");
+        registry
+            .register(Box::new(rate_limit_hits_total.clone()))
+            .expect("registration");
+        registry
+            .register(Box::new(circuit_breaker_state.clone()))
+            .expect("registration");
+        registry
+            .register(Box::new(active_sessions.clone()))
+            .expect("registration");
 
         Self {
             registry,

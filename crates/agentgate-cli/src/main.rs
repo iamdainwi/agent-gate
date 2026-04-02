@@ -84,7 +84,11 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
-        Commands::Wrap { policy, metrics_port, command } => {
+        Commands::Wrap {
+            policy,
+            metrics_port,
+            command,
+        } => {
             if command.is_empty() {
                 eprintln!("error: no command specified. Usage: agentgate wrap -- <cmd> [args...]");
                 std::process::exit(1);

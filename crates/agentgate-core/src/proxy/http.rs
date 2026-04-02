@@ -154,7 +154,9 @@ async fn try_proxy(state: HttpState, req: Request) -> Result<Response> {
                             )
                                 .into_response());
                         }
-                        EvalOutcome::Allow { arguments: allowed_args } => {
+                        EvalOutcome::Allow {
+                            arguments: allowed_args,
+                        } => {
                             metrics::global().active_sessions.inc();
                             let upstream_resp =
                                 forward(&state, &method, &path, &in_headers, body_bytes.clone())
@@ -165,7 +167,9 @@ async fn try_proxy(state: HttpState, req: Request) -> Result<Response> {
                             let status_label = if is_error { "error" } else { "success" };
 
                             let m = metrics::global();
-                            m.tool_calls_total.with_label_values(&[&tool_name, status_label]).inc();
+                            m.tool_calls_total
+                                .with_label_values(&[&tool_name, status_label])
+                                .inc();
                             m.tool_call_duration_seconds
                                 .with_label_values(&[&tool_name])
                                 .observe(elapsed.as_secs_f64());

@@ -235,7 +235,9 @@ async fn try_message_handler(state: SseState, body: axum::body::Bytes) -> Result
                     )
                         .into_response());
                 }
-                EvalOutcome::Allow { arguments: allowed_args } => {
+                EvalOutcome::Allow {
+                    arguments: allowed_args,
+                } => {
                     let endpoint = state.message_endpoint.read().await.clone();
                     let mut req_builder = state
                         .http_client
@@ -256,7 +258,9 @@ async fn try_message_handler(state: SseState, body: axum::body::Bytes) -> Result
                     let status_label = if is_error { "error" } else { "success" };
 
                     let m = metrics::global();
-                    m.tool_calls_total.with_label_values(&[&tool_name, status_label]).inc();
+                    m.tool_calls_total
+                        .with_label_values(&[&tool_name, status_label])
+                        .inc();
                     m.tool_call_duration_seconds
                         .with_label_values(&[&tool_name])
                         .observe(elapsed.as_secs_f64());
@@ -271,13 +275,21 @@ async fn try_message_handler(state: SseState, body: axum::body::Bytes) -> Result
                         &tool_name,
                         allowed_args,
                         &state.server_name,
-                        if is_error { InvocationStatus::Error } else { InvocationStatus::Allowed },
+                        if is_error {
+                            InvocationStatus::Error
+                        } else {
+                            InvocationStatus::Allowed
+                        },
                         None,
                     ));
 
-                    let http_status = axum::http::StatusCode::from_u16(upstream_resp.status().as_u16())
-                        .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-                    let resp_body = upstream_resp.bytes().await.context("Failed to read upstream response")?;
+                    let http_status =
+                        axum::http::StatusCode::from_u16(upstream_resp.status().as_u16())
+                            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                    let resp_body = upstream_resp
+                        .bytes()
+                        .await
+                        .context("Failed to read upstream response")?;
                     return Ok((http_status, resp_body).into_response());
                 }
             }

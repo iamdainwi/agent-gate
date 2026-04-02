@@ -60,8 +60,8 @@ impl StdioProxy {
 
         if let Some(port) = self.config.metrics_port {
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
-            let router = Router::new()
-                .route("/metrics", axum::routing::get(metrics::metrics_handler));
+            let router =
+                Router::new().route("/metrics", axum::routing::get(metrics::metrics_handler));
             match TcpListener::bind(addr).await {
                 Ok(listener) => {
                     tracing::info!(addr = %addr, "Metrics server listening");
@@ -209,7 +209,9 @@ async fn proxy_inbound(
                             .map_err(|e| anyhow::anyhow!("Channel error: {e}"))?;
                         continue;
                     }
-                    EvalOutcome::Allow { arguments: allowed_args } => {
+                    EvalOutcome::Allow {
+                        arguments: allowed_args,
+                    } => {
                         let forward_line = if allowed_args != original_args {
                             serde_json::to_string(&rebuild_call(req, allowed_args.clone()))?
                         } else {
@@ -338,7 +340,9 @@ fn flush_pending(
         _ => "unknown",
     };
     let m = metrics::global();
-    m.tool_calls_total.with_label_values(&[&call.tool_name, status_label]).inc();
+    m.tool_calls_total
+        .with_label_values(&[&call.tool_name, status_label])
+        .inc();
     m.tool_call_duration_seconds
         .with_label_values(&[&call.tool_name])
         .observe(elapsed.as_secs_f64());
