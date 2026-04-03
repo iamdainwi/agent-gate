@@ -24,6 +24,9 @@ pub struct AgentGateConfig {
     pub circuit_breaker: CircuitBreakerConfig,
     #[serde(default)]
     pub servers: Vec<ServerEntry>,
+    /// Log retention settings — prevents unbounded disk growth.
+    #[serde(default)]
+    pub log_retention: LogRetentionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +98,25 @@ pub struct ServerEntry {
     pub bind_port: Option<u16>,
 }
 
+/// Controls automatic pruning of the audit log database to prevent unbounded disk growth.
+/// A background task runs hourly and enforces both limits; the stricter one wins.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogRetentionConfig {
+    /// Delete records older than this many days. 0 = disabled. Default: 30.
+    pub retention_days: u64,
+    /// Cap the total number of rows. Oldest rows are deleted first. 0 = disabled. Default: 500_000.
+    pub max_rows: u64,
+}
+
+impl Default for LogRetentionConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: 30,
+            max_rows: 500_000,
+        }
+    }
+}
+
 impl Default for AgentGateConfig {
     fn default() -> Self {
         Self {
@@ -108,6 +130,7 @@ impl Default for AgentGateConfig {
             rate_limits: RateLimitConfig::default(),
             circuit_breaker: CircuitBreakerConfig::default(),
             servers: Vec::new(),
+            log_retention: LogRetentionConfig::default(),
         }
     }
 }

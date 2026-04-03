@@ -3,9 +3,64 @@ use super::state::DashboardState;
 use super::ws::ws_live_handler;
 use crate::metrics;
 use anyhow::Result;
-use axum::{http::StatusCode, routing::get, Router};
+use axum::{
+    extract::{Request, State},
+    http::{HeaderMap, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::get,
+    Json, Router,
+};
+use rust_embed::{Embed, RustEmbed};
+use serde_json::json;
 use tower_http::cors::{AllowHeaders, AllowMethods, CorsLayer};
-use tower_http::services::{ServeDir, ServeFile};
+
+/// Embed the pre-built Next.js static export into the binary at compile time.
+///
+/// `dashboard/out/` must exist at compile time (it's created by `npm run build`
+/// in the `dashboard/` directory). An empty directory produces a binary with no
+/// embedded UI assets; the fallback 503 handler is returned for UI routes.
+#[derive(RustEmbed)]
+#[folder = "$CARGO_MANIFEST_DIR/../../dashboard/out"]
+struct DashboardAssets;
+
+// ── Auth middleware ───────────────────────────────────────────────────────────
+
+/// Require `Authorization: Bearer <token>` on all routes except `/health` and `/metrics`.
+/// Those two are exempt so monitoring systems can scrape without credentials.
+async fn auth_layer(
+    State(state): State<DashboardState>,
+    headers: HeaderMap,
+    req: Request,
+    next: Next,
+) -> Response {
+    let path = req.uri().path();
+
+    // Public endpoints — no auth required.
+    if path == "/health" || path == "/metrics" {
+        return next.run(req).await;
+    }
+
+    let expected = format!("Bearer {}", state.auth_token);
+    let provided = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    // Constant-time comparison via `==` is fine here: the token is a random UUID
+    // and there is no oracle attack surface since we are bound to 127.0.0.1 only.
+    if provided != expected {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "Invalid or missing Authorization: Bearer token" })),
+        )
+            .into_response();
+    }
+
+    next.run(req).await
+}
+
+// ── Router ────────────────────────────────────────────────────────────────────
 
 /// Build the axum router for the dashboard API and static file serving.
 /// CORS is restricted to same-machine origins only — the dashboard must never
@@ -39,26 +94,48 @@ fn build_router(state: DashboardState, port: u16) -> Router {
         .route("/health", get(|| async { "ok" }))
         .route("/metrics", get(metrics::metrics_handler));
 
-    // Serve the pre-built Next.js static export when the `dashboard/out` directory
-    // exists. Otherwise return a helpful 503 for unknown paths.
-    let static_path = std::path::Path::new("dashboard/out");
-    let router = if static_path.exists() {
-        let fallback_file = static_path.join("index.html");
-        api.fallback_service(
-            ServeDir::new(static_path)
-                .append_index_html_on_directories(true)
-                .fallback(ServeFile::new(fallback_file)),
-        )
-    } else {
-        api.fallback(|| async {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Dashboard not built. Run `npm run build` inside the `dashboard/` directory.",
-            )
-        })
-    };
+    // Serve the embedded Next.js static export. Falls back to a 503 when no
+    // assets were embedded (e.g. a dev build without a prior `npm run build`).
+    let router = api.fallback(embedded_asset_handler);
 
-    router.layer(cors).with_state(state)
+    router
+        .layer(middleware::from_fn_with_state(state.clone(), auth_layer))
+        .layer(cors)
+        .with_state(state)
+}
+
+/// Serve embedded static assets or fall back to `/index.html` for SPA routes.
+async fn embedded_asset_handler(req: Request) -> Response {
+    let path = req.uri().path();
+
+    // Try the exact path, then with `/index.html` appended (directories),
+    // then fall back to the root `/index.html` for SPA client-side routing.
+    let candidates = [
+        path.to_string(),
+        format!("{}/index.html", path.trim_end_matches('/')),
+        "/index.html".to_string(),
+    ];
+
+    for candidate in &candidates {
+        let key = candidate.trim_start_matches('/');
+        if let Some(asset) = <DashboardAssets as Embed>::get(key) {
+            let mime = mime_guess::from_path(key)
+                .first_or_octet_stream()
+                .to_string();
+            return (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, mime)],
+                asset.data.into_owned(),
+            )
+                .into_response();
+        }
+    }
+
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Dashboard not built. Run `npm run build` inside the `dashboard/` directory.",
+    )
+        .into_response()
 }
 
 /// Spawn the dashboard API + UI server on `port` as a background tokio task.

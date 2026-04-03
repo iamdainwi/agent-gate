@@ -4,4 +4,4 @@ mod state;
 mod ws;
 
 pub use server::spawn_dashboard;
-pub use state::DashboardState;
+pub use state::{generate_and_print_token, DashboardState};

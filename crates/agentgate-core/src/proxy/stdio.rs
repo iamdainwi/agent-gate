@@ -1,9 +1,11 @@
 use crate::config::AgentGateConfig;
-use crate::dashboard::{spawn_dashboard, DashboardState};
+use crate::dashboard::{generate_and_print_token, spawn_dashboard, DashboardState};
 use crate::logging::structured::{log_event, Direction, LogEvent};
 use crate::metrics;
 use crate::policy::PolicyEngine;
-use crate::protocol::jsonrpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse};
+use crate::protocol::jsonrpc::{
+    extract_tool_params, rebuild_tool_call, JsonRpcMessage, JsonRpcResponse,
+};
 use crate::protocol::mcp;
 use crate::proxy::evaluation::{evaluate_tool_call, EvalOutcome};
 use crate::ratelimit::{CircuitBreaker, RateLimiter};
@@ -44,7 +46,10 @@ impl StdioProxy {
     pub async fn run(&self, command: &str, args: &[String]) -> Result<()> {
         tracing::info!("Starting stdio proxy for: {} {:?}", command, args);
 
-        let storage = StorageWriter::spawn(self.config.db_path.clone())?;
+        let storage = StorageWriter::spawn_with_retention(
+            self.config.db_path.clone(),
+            self.config.log_retention.clone(),
+        )?;
 
         let policy = self
             .config
@@ -77,11 +82,13 @@ impl StdioProxy {
         }
 
         let dashboard_port = self.config.dashboard_port.unwrap_or(7070);
+        let auth_token = generate_and_print_token();
         let dash_state = DashboardState {
             db_path: self.config.db_path.clone(),
             policy_path: self.config.policy_path.clone(),
             policy_engine: policy.clone(),
             live_tx: storage.live_sender(),
+            auth_token,
         };
         spawn_dashboard(dash_state, dashboard_port)?;
 
@@ -229,7 +236,7 @@ async fn proxy_inbound(
                     continue;
                 }
 
-                let (tool_name, arguments) = extract_params(req);
+                let (tool_name, arguments) = extract_tool_params(req);
                 let original_args = arguments.clone();
 
                 match evaluate_tool_call(
@@ -254,7 +261,7 @@ async fn proxy_inbound(
                         arguments: allowed_args,
                     } => {
                         let forward_line = if allowed_args != original_args {
-                            serde_json::to_string(&rebuild_call(req, allowed_args.clone()))?
+                            serde_json::to_string(&rebuild_tool_call(req, allowed_args.clone()))?
                         } else {
                             line.clone()
                         };
@@ -440,40 +447,11 @@ fn flush_pending(
     forward_line
 }
 
-fn rebuild_call(original: &JsonRpcRequest, new_arguments: Option<Value>) -> JsonRpcRequest {
-    let mut params = original
-        .params
-        .clone()
-        .unwrap_or(Value::Object(Default::default()));
-    if let (Value::Object(ref mut map), Some(args)) = (&mut params, new_arguments) {
-        map.insert("arguments".to_string(), args);
-    }
-    JsonRpcRequest {
-        jsonrpc: original.jsonrpc.clone(),
-        id: original.id.clone(),
-        method: original.method.clone(),
-        params: Some(params),
-    }
-}
-
-fn id_key(req: &JsonRpcRequest) -> String {
+fn id_key(req: &crate::protocol::jsonrpc::JsonRpcRequest) -> String {
     req.id
         .as_ref()
         .map(|v| v.to_string())
         .unwrap_or_else(|| "null".to_string())
-}
-
-fn extract_params(req: &JsonRpcRequest) -> (String, Option<Value>) {
-    let Some(params) = &req.params else {
-        return ("unknown".to_string(), None);
-    };
-    let tool_name = params
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let arguments = params.get("arguments").cloned();
-    (tool_name, arguments)
 }
 
 /// Resolves when SIGTERM is received on Unix; never resolves on other platforms.

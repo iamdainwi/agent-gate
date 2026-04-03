@@ -1,5 +1,5 @@
 use agentgate_core::config::{agentgate_dir, AgentGateConfig, ServerEntry, TransportKind};
-use agentgate_core::dashboard::{spawn_dashboard, DashboardState};
+use agentgate_core::dashboard::{generate_and_print_token, spawn_dashboard, DashboardState};
 use agentgate_core::policy::PolicyEngine;
 use agentgate_core::proxy::http::HttpProxy;
 use agentgate_core::proxy::sse::SseProxy;
@@ -167,11 +167,13 @@ async fn main() -> Result<()> {
             let (policy_engine, rate_limiter, circuit_breaker, storage) =
                 build_shared_components(&config)?;
 
+            let auth_token = generate_and_print_token();
             let dash_state = DashboardState {
                 db_path: config.db_path.clone(),
                 policy_path: config.policy_path.clone(),
                 policy_engine: policy_engine.clone(),
                 live_tx: storage.live_sender(),
+                auth_token,
             };
             spawn_dashboard(dash_state, config.dashboard_port.unwrap_or(7070))?;
 
@@ -258,7 +260,8 @@ fn build_shared_components(config: &AgentGateConfig) -> Result<SharedComponents>
 
     let rate_limiter = Arc::new(RateLimiter::new(config.rate_limits.clone()));
     let circuit_breaker = Arc::new(CircuitBreaker::new(config.circuit_breaker.clone()));
-    let storage = StorageWriter::spawn(config.db_path.clone())?;
+    let storage =
+        StorageWriter::spawn_with_retention(config.db_path.clone(), config.log_retention.clone())?;
 
     Ok((policy, rate_limiter, circuit_breaker, storage))
 }
@@ -387,7 +390,9 @@ fn run_init() -> Result<()> {
         println!("  created {}", policy_path.display());
     }
 
-    println!("\nAgentGate initialised. Edit the files above, then run `agentgate wrap -- <server>`.");
+    println!(
+        "\nAgentGate initialised. Edit the files above, then run `agentgate wrap -- <server>`."
+    );
     Ok(())
 }
 
@@ -406,16 +411,28 @@ fn run_doctor(config: &AgentGateConfig) {
     let config_path = dir.join("config.toml");
     if config_path.exists() {
         let parse_ok = AgentGateConfig::load_toml(&config_path).is_ok();
-        print_check(parse_ok, &format!("config.toml is valid TOML: {}", config_path.display()));
+        print_check(
+            parse_ok,
+            &format!("config.toml is valid TOML: {}", config_path.display()),
+        );
         all_ok &= parse_ok;
     } else {
-        print_check(false, &format!("config.toml not found (run `agentgate init`): {}", config_path.display()));
+        print_check(
+            false,
+            &format!(
+                "config.toml not found (run `agentgate init`): {}",
+                config_path.display()
+            ),
+        );
         all_ok = false;
     }
 
     // 3. Database path is writable (try creating the parent dir and touching a temp file).
     let db_ok = check_db_writable(&config.db_path);
-    print_check(db_ok, &format!("DB path is writable: {}", config.db_path.display()));
+    print_check(
+        db_ok,
+        &format!("DB path is writable: {}", config.db_path.display()),
+    );
     all_ok &= db_ok;
 
     // 4. Dashboard port (default 7070) is available.
@@ -431,7 +448,10 @@ fn run_doctor(config: &AgentGateConfig) {
     if let Some(ref policy_path) = config.policy_path {
         if policy_path.exists() {
             let ok = agentgate_core::policy::PolicyEngine::load(policy_path).is_ok();
-            print_check(ok, &format!("Policy file is valid: {}", policy_path.display()));
+            print_check(
+                ok,
+                &format!("Policy file is valid: {}", policy_path.display()),
+            );
             all_ok &= ok;
         } else {
             print_check(

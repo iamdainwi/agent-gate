@@ -28,3 +28,6 @@ tower-http = { version = "0.5", features = ["cors", "fs"] }
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 dashmap = "6"
+notify = { version = "6", default-features = false, features = ["macos_fsevent"] }
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"

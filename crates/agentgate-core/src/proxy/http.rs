@@ -1,7 +1,7 @@
 use crate::config::{expand_env_vars, ServerEntry};
 use crate::metrics;
 use crate::policy::PolicyEngine;
-use crate::protocol::jsonrpc::JsonRpcMessage;
+use crate::protocol::jsonrpc::{extract_tool_params, JsonRpcMessage};
 use crate::protocol::mcp;
 use crate::proxy::evaluation::{error_resp, evaluate_tool_call, EvalOutcome};
 use crate::ratelimit::{CircuitBreaker, RateLimiter};
@@ -132,7 +132,7 @@ async fn try_proxy(state: HttpState, req: Request) -> Result<Response> {
         if let Ok(raw) = std::str::from_utf8(&body_bytes) {
             if let Ok(JsonRpcMessage::Request(ref rpc_req)) = JsonRpcMessage::parse(raw) {
                 if rpc_req.method == mcp::TOOLS_CALL {
-                    let (tool_name, arguments) = extract_params(rpc_req);
+                    let (tool_name, arguments) = extract_tool_params(rpc_req);
                     let started_at = Instant::now();
 
                     match evaluate_tool_call(
@@ -278,21 +278,6 @@ async fn build_axum_response(upstream: reqwest::Response) -> Result<Response> {
 
 async fn health_handler() -> &'static str {
     "ok"
-}
-
-fn extract_params(
-    req: &crate::protocol::jsonrpc::JsonRpcRequest,
-) -> (String, Option<serde_json::Value>) {
-    let Some(params) = &req.params else {
-        return ("unknown".to_string(), None);
-    };
-    let tool_name = params
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let arguments = params.get("arguments").cloned();
-    (tool_name, arguments)
 }
 
 pub fn error_response_body(id: Option<&serde_json::Value>, code: i64, message: &str) -> String {

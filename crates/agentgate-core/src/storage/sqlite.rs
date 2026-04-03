@@ -1,3 +1,4 @@
+use crate::config::LogRetentionConfig;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
@@ -101,10 +102,16 @@ pub struct StorageWriter {
 impl StorageWriter {
     /// Spawns a dedicated OS thread that drains the sync channel and writes to SQLite.
     pub fn spawn(db_path: PathBuf) -> Result<Self> {
+        Self::spawn_with_retention(db_path, LogRetentionConfig::default())
+    }
+
+    /// Like `spawn` but with explicit log-retention settings.
+    pub fn spawn_with_retention(db_path: PathBuf, retention: LogRetentionConfig) -> Result<Self> {
         let (tx, rx) = std::sync::mpsc::sync_channel::<InvocationRecord>(STORAGE_CHANNEL_CAPACITY);
         let (live_tx, _) = broadcast::channel::<InvocationRecord>(LIVE_BROADCAST_CAPACITY);
         let live_tx_bg = live_tx.clone();
 
+        let db_path_for_pruner = db_path.clone();
         let handle = std::thread::spawn(move || {
             let conn = match open_and_migrate(&db_path) {
                 Ok(c) => c,
@@ -123,11 +130,18 @@ impl StorageWriter {
             // rx.recv() returned Err — all SyncSenders have been dropped; exit cleanly.
         });
 
-        Ok(Self {
+        let writer = Self {
             tx,
             live_tx,
             thread: Arc::new(Mutex::new(Some(handle))),
-        })
+        };
+
+        // Spawn the hourly pruning task only if at least one limit is enabled.
+        if retention.retention_days > 0 || retention.max_rows > 0 {
+            spawn_pruner(db_path_for_pruner, retention);
+        }
+
+        Ok(writer)
     }
 
     /// Enqueue a record for persistence. Drops the record (with a warning) if the
@@ -164,17 +178,16 @@ impl StorageWriter {
         // the background thread's rx.recv() returns Err and the thread exits.
         drop(self.tx);
 
-        let handle = self
-            .thread
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
+        let handle = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take();
 
         if let Some(h) = handle {
             // Join on a spawn_blocking task so we don't block the async runtime.
-            let _ = tokio::time::timeout(timeout, tokio::task::spawn_blocking(|| {
-                let _ = h.join();
-            }))
+            let _ = tokio::time::timeout(
+                timeout,
+                tokio::task::spawn_blocking(|| {
+                    let _ = h.join();
+                }),
+            )
             .await;
         }
     }
@@ -317,6 +330,84 @@ fn insert_record(conn: &Connection, r: &InvocationRecord) -> Result<()> {
     )
     .context("INSERT into tool_invocations failed")?;
     Ok(())
+}
+
+/// Spawn a background tokio task that prunes the audit log once per hour.
+///
+/// Two independent limits are enforced:
+/// - `retention_days > 0` — delete records older than N days.
+/// - `max_rows > 0`       — trim the table to at most N rows, keeping the most recent ones.
+///
+/// Both run inside `spawn_blocking` so they don't stall the async runtime.
+fn spawn_pruner(db_path: PathBuf, cfg: LogRetentionConfig) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let path = db_path.clone();
+            let c = cfg.clone();
+            tokio::task::spawn_blocking(move || {
+                prune_once(&path, &c);
+            })
+            .await
+            .ok();
+        }
+    });
+}
+
+fn prune_once(db_path: &Path, cfg: &LogRetentionConfig) {
+    let conn = match open_and_migrate(db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Log pruner: failed to open DB: {e}");
+            return;
+        }
+    };
+
+    // 1. Time-based pruning.
+    if cfg.retention_days > 0 {
+        let cutoff = format!("-{} days", cfg.retention_days);
+        match conn.execute(
+            "DELETE FROM tool_invocations WHERE timestamp < datetime('now', ?1)",
+            rusqlite::params![cutoff],
+        ) {
+            Ok(n) if n > 0 => tracing::info!(
+                "Log pruner: deleted {n} records older than {} days",
+                cfg.retention_days
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("Log pruner: time-based DELETE failed: {e}"),
+        }
+    }
+
+    // 2. Row-count cap: keep only the most recent `max_rows` rows.
+    if cfg.max_rows > 0 {
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tool_invocations", [], |r| r.get(0))
+            .unwrap_or(0);
+
+        let excess = total - cfg.max_rows as i64;
+        if excess > 0 {
+            match conn.execute(
+                "DELETE FROM tool_invocations
+                 WHERE id IN (
+                     SELECT id FROM tool_invocations
+                     ORDER BY timestamp ASC LIMIT ?1
+                 )",
+                rusqlite::params![excess],
+            ) {
+                Ok(n) => tracing::info!(
+                    "Log pruner: trimmed {n} oldest records (row cap = {})",
+                    cfg.max_rows
+                ),
+                Err(e) => tracing::warn!("Log pruner: row-cap DELETE failed: {e}"),
+            }
+        }
+    }
+
+    // Reclaim freed pages after deletions.
+    let _ = conn.execute_batch("PRAGMA incremental_vacuum;");
 }
 
 pub fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<InvocationRecord> {

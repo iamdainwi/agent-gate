@@ -1,7 +1,7 @@
 use crate::config::{expand_env_vars, ServerEntry};
 use crate::metrics;
 use crate::policy::PolicyEngine;
-use crate::protocol::jsonrpc::JsonRpcMessage;
+use crate::protocol::jsonrpc::{extract_tool_params, JsonRpcMessage};
 use crate::protocol::mcp;
 use crate::proxy::evaluation::{evaluate_tool_call, make_record, EvalOutcome};
 use crate::ratelimit::{CircuitBreaker, RateLimiter};
@@ -213,7 +213,7 @@ async fn try_message_handler(state: SseState, body: axum::body::Bytes) -> Result
 
     if let Some(JsonRpcMessage::Request(ref req)) = msg {
         if req.method == mcp::TOOLS_CALL {
-            let (tool_name, arguments) = extract_params(req);
+            let (tool_name, arguments) = extract_tool_params(req);
             let started_at = Instant::now();
 
             match evaluate_tool_call(
@@ -359,21 +359,6 @@ fn derive_message_endpoint(sse_url: &str) -> String {
 
 fn base_url(url: &str) -> &str {
     url.rfind('/').map(|i| &url[..i]).unwrap_or(url)
-}
-
-fn extract_params(
-    req: &crate::protocol::jsonrpc::JsonRpcRequest,
-) -> (String, Option<serde_json::Value>) {
-    let Some(params) = &req.params else {
-        return ("unknown".to_string(), None);
-    };
-    let tool_name = params
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let arguments = params.get("arguments").cloned();
-    (tool_name, arguments)
 }
 
 #[allow(dead_code)]
