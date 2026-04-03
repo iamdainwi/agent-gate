@@ -117,14 +117,14 @@ agentgate wrap --metrics-port 9090 -- <mcp-server>
 
 Six metrics are exported:
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `agentgate_tool_calls_total` | Counter | Tool calls by tool name and status |
-| `agentgate_tool_call_duration_seconds` | Histogram | Latency distribution per tool |
-| `agentgate_policy_denials_total` | Counter | Policy denials by rule ID |
-| `agentgate_rate_limit_hits_total` | Counter | Rate limit hits by scope |
-| `agentgate_circuit_breaker_state` | Gauge | Circuit state (0=closed, 1=open, 2=half-open) |
-| `agentgate_active_sessions` | Gauge | In-flight tool calls |
+| Metric                                 | Type      | Description                                   |
+| -------------------------------------- | --------- | --------------------------------------------- |
+| `agentgate_tool_calls_total`           | Counter   | Tool calls by tool name and status            |
+| `agentgate_tool_call_duration_seconds` | Histogram | Latency distribution per tool                 |
+| `agentgate_policy_denials_total`       | Counter   | Policy denials by rule ID                     |
+| `agentgate_rate_limit_hits_total`      | Counter   | Rate limit hits by scope                      |
+| `agentgate_circuit_breaker_state`      | Gauge     | Circuit state (0=closed, 1=open, 2=half-open) |
+| `agentgate_active_sessions`            | Gauge     | In-flight tool calls                          |
 
 A ready-made Grafana dashboard is at `dashboards/grafana.json`.
 
@@ -146,23 +146,23 @@ cd dashboard && npm install && npm run build
 
 Pages:
 
-| Page | Path | Description |
-|------|------|-------------|
-| Overview | `/` | KPI cards, call rate sparkline, live WebSocket feed |
-| Activity | `/activity` | Filterable, paginated invocations table |
-| Violations | `/violations` | Denied/rate-limited calls grouped by policy rule |
-| Analytics | `/analytics` | Per-tool call volume, error rate, latency chart |
-| Settings | `/settings` | In-browser TOML policy editor with live reload |
+| Page       | Path          | Description                                         |
+| ---------- | ------------- | --------------------------------------------------- |
+| Overview   | `/`           | KPI cards, call rate sparkline, live WebSocket feed |
+| Activity   | `/activity`   | Filterable, paginated invocations table             |
+| Violations | `/violations` | Denied/rate-limited calls grouped by policy rule    |
+| Analytics  | `/analytics`  | Per-tool call volume, error rate, latency chart     |
+| Settings   | `/settings`   | In-browser TOML policy editor with live reload      |
 
 The dashboard WebSocket endpoint (`/api/ws/live`) streams every persisted invocation in real time.
 
 ## Transport Support
 
-| Mode | Command | Use case |
-|------|---------|----------|
-| **stdio** | `agentgate wrap -- <cmd>` | Any stdio MCP server |
-| **SSE** | `agentgate serve --transport sse --upstream <url>` | Server-Sent Events MCP servers |
-| **HTTP** | `agentgate serve --transport http --upstream <url>` | HTTP MCP servers |
+| Mode      | Command                                             | Use case                       |
+| --------- | --------------------------------------------------- | ------------------------------ |
+| **stdio** | `agentgate wrap -- <cmd>`                           | Any stdio MCP server           |
+| **SSE**   | `agentgate serve --transport sse --upstream <url>`  | Server-Sent Events MCP servers |
+| **HTTP**  | `agentgate serve --transport http --upstream <url>` | HTTP MCP servers               |
 
 For SSE/HTTP transports, the proxy binds on port 7072 by default:
 
@@ -256,19 +256,19 @@ agentgate/
 - [x] **Phase 4** — SSE & HTTP transport support
 - [x] **Phase 5** — Prometheus metrics & Grafana dashboard
 - [x] **Phase 6** — Real-time dashboard (Next.js 15)
-- [ ] **Phase 7** — Distribution (Docker, Homebrew, installer)
+- [x] **Phase 7** — Distribution (Docker, Homebrew, installer)
 
 ## Tech Stack
 
-| Component | Technology |
-|-----------|-----------|
-| Core | Rust, Tokio, Serde |
-| Protocol | JSON-RPC 2.0, MCP |
-| Storage | SQLite (rusqlite, WAL mode) |
-| API server | axum 0.7, tower-http |
-| Metrics | prometheus 0.13 |
-| Dashboard | Next.js 15, Tailwind CSS 3, Recharts |
-| CLI | Clap, Tabled |
+| Component  | Technology                           |
+| ---------- | ------------------------------------ |
+| Core       | Rust, Tokio, Serde                   |
+| Protocol   | JSON-RPC 2.0, MCP                    |
+| Storage    | SQLite (rusqlite, WAL mode)          |
+| API server | axum 0.7, tower-http                 |
+| Metrics    | prometheus 0.13                      |
+| Dashboard  | Next.js 15, Tailwind CSS 3, Recharts |
+| CLI        | Clap, Tabled                         |
 
 ## Building from Source
 
