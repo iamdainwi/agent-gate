@@ -1,0 +1,134 @@
+.TH AGENTGATE 1 "2026-04-03" "agentgate 0.1.0" "User Commands"
+.SH NAME
+agentgate \- AI Agent Security & Observability Gateway for MCP servers
+.SH SYNOPSIS
+.B agentgate
+[\fB\-\-config\fR \fIFILE\fR] [\fB\-\-db\fR \fIPATH\fR] \fICOMMAND\fR [\fIARGS\fR]
+.SH DESCRIPTION
+.B agentgate
+is a transparent proxy that sits between AI agents and Model Context Protocol
+(MCP) servers. It enforces security policies, records every tool invocation to
+an audit log, applies rate limiting and circuit breaking, and exposes a live
+dashboard for observability.
+.SH GLOBAL OPTIONS
+.TP
+.BR \-\-config " " \fIFILE\fR
+Path to a TOML configuration file.
+Defaults to \fI~/.agentgate/config.toml\fR.
+.TP
+.BR \-\-db " " \fIPATH\fR
+Override the SQLite audit-log database path.
+.SH COMMANDS
+.SS wrap
+.B agentgate wrap
+[\fB\-\-policy\fR \fIFILE\fR]
+[\fB\-\-metrics\-port\fR \fIPORT\fR]
+[\fB\-\-dashboard\-port\fR \fIPORT\fR]
+\fB\-\-\fR \fICMD\fR [\fIARGS\fR]
+.PP
+Wrap a stdio MCP server. AgentGate spawns \fICMD\fR and proxies every
+JSON-RPC message, applying policy rules and logging each tool call.
+.TP
+.BR \-\-policy " " \fIFILE\fR
+Path to a TOML policy file; overrides \fIconfig.policy_path\fR.
+.TP
+.BR \-\-metrics\-port " " \fIPORT\fR
+Expose a Prometheus \fI/metrics\fR endpoint on this port (e.g.\& 9090).
+.TP
+.BR \-\-dashboard\-port " " \fIPORT\fR
+Port for the REST API and dashboard UI (default: 7070).
+.SS serve
+.B agentgate serve
+\fB\-\-transport\fR \fI{sse|http}\fR
+\fB\-\-upstream\fR \fIURL\fR
+[\fB\-\-port\fR \fIPORT\fR]
+[\fB\-\-header\fR \fIKEY:VALUE\fR] ...
+[\fB\-\-policy\fR \fIFILE\fR]
+[\fB\-\-dashboard\-port\fR \fIPORT\fR]
+.PP
+Start an HTTP or SSE reverse proxy. Requests arriving on \fI\-\-port\fR
+(default 7072) are forwarded to \fI\-\-upstream\fR, with policy enforcement
+and logging applied to every tool call.
+.SS logs
+.B agentgate logs
+[\fB\-\-tool\fR \fINAME\fR]
+[\fB\-\-status\fR \fISTATUS\fR]
+[\fB\-\-limit\fR \fIN\fR]
+[\fB\-\-jsonl\fR]
+.PP
+Query and display tool-invocation records from the audit database.
+\fISTATUS\fR is one of \fBallowed\fR, \fBdenied\fR, \fBerror\fR,
+\fBrate_limited\fR. Use \fB\-\-jsonl\fR to emit one JSON object per line
+for piping to \fBjq\fR(1).
+.SS init
+.B agentgate init
+.PP
+Scaffold the default configuration and policy files under
+\fI~/.agentgate/\fR. Safe to re\-run; existing files are never overwritten.
+.SS doctor
+.B agentgate doctor
+.PP
+Run a series of pre-flight checks and report any problems found:
+directory permissions, config validity, database writability, port
+availability, and policy-file correctness.
+.SH POLICY FILE
+Policy files are TOML documents containing an ordered list of
+\fB[[rules]]\fR tables. Rules are evaluated top-to-bottom; the first match
+wins. Available actions: \fBallow\fR, \fBdeny\fR, \fBredact\fR.
+.PP
+See \fIpolicies/example.toml\fR in the source repository for annotated examples.
+.SH ENVIRONMENT
+.TP
+.B HOME
+Used to resolve the default config directory (\fI$HOME/.agentgate\fR).
+.TP
+.B AGENTGATE_LOG
+Set to \fBdebug\fR or \fBtrace\fR for verbose logging output.
+.SH FILES
+.TP
+.I ~/.agentgate/config.toml
+Default configuration file.
+.TP
+.I ~/.agentgate/logs.db
+SQLite audit log.
+.TP
+.I ~/.agentgate/policies/default.toml
+Default policy file (created by \fBinit\fR).
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+General error or a failing \fBdoctor\fR check.
+.PP
+When wrapping a child process, AgentGate exits with the same code as the
+child unless killed by a signal, in which case it exits with code 1.
+.SH EXAMPLES
+Wrap the filesystem MCP server with a deny policy:
+.PP
+.nf
+agentgate wrap --policy ~/.agentgate/policies/default.toml \\
+    -- npx @modelcontextprotocol/server-filesystem /workspace
+.fi
+.PP
+Proxy a remote SSE server on port 7072:
+.PP
+.nf
+agentgate serve --transport sse \\
+    --upstream https://mcp.example.com \\
+    --header "Authorization: Bearer $TOKEN"
+.fi
+.PP
+View the last 20 denied calls:
+.PP
+.nf
+agentgate logs --status denied --limit 20
+.fi
+.SH SEE ALSO
+.BR mcp (1),
+.BR jq (1)
+.SH AUTHOR
+Written by the AgentGate contributors.
+.SH BUGS
+Report issues at <https://github.com/iamdanwi/agentgate/issues>.

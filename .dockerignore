@@ -1,0 +1,10 @@
+target/
+.git/
+dashboard/node_modules/
+dashboard/.next/
+fuzz/
+tests/
+*.md
+*.png
+.idea/
+.vscode/

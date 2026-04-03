@@ -4,11 +4,13 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
-use tokio::sync::mpsc::{self, Sender};
 
-/// Payloads larger than this are truncated before storage to prevent database bloat.
-const MAX_PAYLOAD_BYTES: usize = 2048;
+/// Payloads exceeding this size are replaced with a valid JSON sentinel rather
+/// than a truncated string fragment that would break downstream JSON parsers.
+/// 64 KB accommodates typical file-read results while preventing unbounded growth.
+const MAX_PAYLOAD_BYTES: usize = 65_536;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS tool_invocations (
@@ -82,39 +84,50 @@ const STORAGE_CHANNEL_CAPACITY: usize = 10_000;
 /// behind by more than this many records will receive `RecvError::Lagged`.
 const LIVE_BROADCAST_CAPACITY: usize = 512;
 
-/// Non-blocking writer that queues records to a background SQLite writer task and
+/// Non-blocking writer that queues records to a dedicated OS writer thread and
 /// broadcasts each persisted record to live WebSocket subscribers.
+///
+/// Uses a standard synchronous bounded channel (`std::sync::mpsc::sync_channel`)
+/// to avoid the `spawn_blocking → block_on` anti-pattern that ties up a thread
+/// from the async runtime's blocking pool for the entire process lifetime.
 #[derive(Clone)]
 pub struct StorageWriter {
-    tx: Sender<InvocationRecord>,
+    tx: std::sync::mpsc::SyncSender<InvocationRecord>,
     live_tx: broadcast::Sender<InvocationRecord>,
+    /// Shared handle to the writer OS thread, consumed once by `flush_async` to join it.
+    thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
 
 impl StorageWriter {
-    /// Spawns a background task that drains the channel and writes to SQLite.
+    /// Spawns a dedicated OS thread that drains the sync channel and writes to SQLite.
     pub fn spawn(db_path: PathBuf) -> Result<Self> {
-        let (tx, mut rx) = mpsc::channel::<InvocationRecord>(STORAGE_CHANNEL_CAPACITY);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<InvocationRecord>(STORAGE_CHANNEL_CAPACITY);
         let (live_tx, _) = broadcast::channel::<InvocationRecord>(LIVE_BROADCAST_CAPACITY);
         let live_tx_bg = live_tx.clone();
 
-        tokio::task::spawn_blocking(move || {
-            let conn = open_and_migrate(&db_path)?;
-
-            let rt = tokio::runtime::Handle::current();
-            rt.block_on(async move {
-                while let Some(record) = rx.recv().await {
-                    if let Err(e) = insert_record(&conn, &record) {
-                        tracing::error!("SQLite insert failed: {e}");
-                    }
-                    // Silently drop if no WebSocket subscribers are connected.
-                    let _ = live_tx_bg.send(record);
+        let handle = std::thread::spawn(move || {
+            let conn = match open_and_migrate(&db_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!("SQLite writer thread failed to open DB: {e}");
+                    return;
                 }
-            });
-
-            Ok::<_, anyhow::Error>(())
+            };
+            while let Ok(record) = rx.recv() {
+                if let Err(e) = insert_record(&conn, &record) {
+                    tracing::error!("SQLite insert failed: {e}");
+                }
+                // Silently drop if no WebSocket subscribers are connected.
+                let _ = live_tx_bg.send(record);
+            }
+            // rx.recv() returned Err — all SyncSenders have been dropped; exit cleanly.
         });
 
-        Ok(Self { tx, live_tx })
+        Ok(Self {
+            tx,
+            live_tx,
+            thread: Arc::new(Mutex::new(Some(handle))),
+        })
     }
 
     /// Enqueue a record for persistence. Drops the record (with a warning) if the
@@ -122,17 +135,16 @@ impl StorageWriter {
     pub fn record(&self, record: InvocationRecord) {
         match self.tx.try_send(record) {
             Ok(()) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
                 tracing::warn!("Storage channel full; invocation record dropped");
             }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                tracing::warn!("Storage writer channel closed; record dropped");
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                tracing::warn!("Storage writer thread disconnected; record dropped");
             }
         }
     }
 
-    /// Subscribe to the live record stream. Each new persisted record is broadcast
-    /// to all active subscribers.
+    /// Subscribe to the live record stream.
     pub fn subscribe(&self) -> broadcast::Receiver<InvocationRecord> {
         self.live_tx.subscribe()
     }
@@ -140,6 +152,31 @@ impl StorageWriter {
     /// Return a clone of the broadcast sender for passing to dashboard state.
     pub fn live_sender(&self) -> broadcast::Sender<InvocationRecord> {
         self.live_tx.clone()
+    }
+
+    /// Drop the write end of the channel and wait (up to `timeout`) for the background
+    /// writer thread to drain all queued records and exit.
+    ///
+    /// Call this during graceful shutdown after all other `StorageWriter` clones have
+    /// been dropped — the background thread exits only when every sender is gone.
+    pub async fn flush_async(self, timeout: std::time::Duration) {
+        // Dropping tx decrements the SyncSender refcount. When all clones are dropped
+        // the background thread's rx.recv() returns Err and the thread exits.
+        drop(self.tx);
+
+        let handle = self
+            .thread
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+
+        if let Some(h) = handle {
+            // Join on a spawn_blocking task so we don't block the async runtime.
+            let _ = tokio::time::timeout(timeout, tokio::task::spawn_blocking(|| {
+                let _ = h.join();
+            }))
+            .await;
+        }
     }
 }
 
@@ -217,7 +254,6 @@ impl StorageReader {
 }
 
 /// Open a WAL-mode SQLite connection at `db_path`, applying the schema if needed.
-/// Exposed to the dashboard API module so it can open its own read connections.
 pub fn open_connection(db_path: &Path) -> Result<Connection> {
     open_and_migrate(db_path)
 }
@@ -240,24 +276,25 @@ fn open_and_migrate(db_path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-fn truncate_payload(s: String) -> String {
+/// Convert a JSON value to a storable string, replacing oversized payloads with a valid
+/// JSON sentinel. Storing a broken string fragment (from naive byte-truncation) would
+/// make stored data unparseable and defeat the purpose of the audit log.
+fn cap_payload(v: &Value) -> String {
+    let s = v.to_string();
     if s.len() <= MAX_PAYLOAD_BYTES {
-        return s;
+        s
+    } else {
+        serde_json::json!({
+            "_truncated": true,
+            "original_size_bytes": s.len()
+        })
+        .to_string()
     }
-    // Find the last valid UTF-8 char boundary at or before the limit.
-    let mut boundary = MAX_PAYLOAD_BYTES;
-    while !s.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    format!("{}...[truncated]", &s[..boundary])
 }
 
 fn insert_record(conn: &Connection, r: &InvocationRecord) -> Result<()> {
-    let arguments = r
-        .arguments
-        .as_ref()
-        .map(|v| truncate_payload(v.to_string()));
-    let result = r.result.as_ref().map(|v| truncate_payload(v.to_string()));
+    let arguments = r.arguments.as_ref().map(cap_payload);
+    let result = r.result.as_ref().map(cap_payload);
 
     conn.execute(
         "INSERT OR REPLACE INTO tool_invocations

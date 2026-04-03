@@ -14,7 +14,9 @@ use tabled::{Table, Tabled};
 #[derive(Parser)]
 #[command(
     name = "agentgate",
-    about = "AI Agent Security & Observability Gateway"
+    about = "AI Agent Security & Observability Gateway",
+    version = env!("CARGO_PKG_VERSION"),
+    long_about = None,
 )]
 struct Cli {
     /// Path to a config TOML file [default: ~/.agentgate/config.toml]
@@ -77,6 +79,10 @@ enum Commands {
         #[arg(long)]
         jsonl: bool,
     },
+    /// Scaffold the default config and policy files in ~/.agentgate/
+    Init,
+    /// Check the AgentGate installation for common problems
+    Doctor,
 }
 
 #[tokio::main]
@@ -219,6 +225,14 @@ async fn main() -> Result<()> {
                 print_table(&records);
             }
         }
+
+        Commands::Init => {
+            run_init()?;
+        }
+
+        Commands::Doctor => {
+            run_doctor(&config);
+        }
     }
 
     Ok(())
@@ -296,4 +310,175 @@ fn print_table(records: &[agentgate_core::storage::InvocationRecord]) {
         })
         .collect();
     println!("{}", Table::new(rows));
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+
+const DEFAULT_CONFIG_TOML: &str = r#"# AgentGate configuration
+log_level  = "info"
+log_format = "pretty"
+
+# Path where the audit SQLite database is stored.
+# db_path = "~/.agentgate/logs.db"   # (default)
+
+# Uncomment to load a policy file on startup.
+# policy_path = "~/.agentgate/policies/default.toml"
+
+# Port for the dashboard UI and REST API (default 7070).
+# dashboard_port = 7070
+
+[rate_limits]
+global_max_calls_per_minute   = 500
+per_tool_max_calls_per_minute = 100
+per_agent_max_calls_per_minute = 200
+
+[circuit_breaker]
+error_threshold  = 5
+window_seconds   = 30
+cooldown_seconds = 60
+"#;
+
+const DEFAULT_POLICY_TOML: &str = r#"# AgentGate policy file
+#
+# Rules are evaluated top-to-bottom; the first match wins.
+# Supported actions: "allow", "deny", "redact"
+#
+# Example — block the shell-execution tool entirely:
+# [[rules]]
+# tool    = "bash"
+# action  = "deny"
+# reason  = "Shell execution is not permitted"
+#
+# Example — redact AWS secrets from any tool response:
+# [[rules]]
+# action  = "redact"
+# redact_patterns = ["AKIA[0-9A-Z]{16}", "(?i)aws_secret[^\\s]*"]
+"#;
+
+fn run_init() -> Result<()> {
+    let dir = agentgate_dir();
+
+    // Create the base directory.
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("Cannot create directory: {}", dir.display()))?;
+
+    // Write config.toml if it does not already exist.
+    let config_path = dir.join("config.toml");
+    if config_path.exists() {
+        println!("  exists  {}", config_path.display());
+    } else {
+        std::fs::write(&config_path, DEFAULT_CONFIG_TOML)
+            .with_context(|| format!("Cannot write {}", config_path.display()))?;
+        println!("  created {}", config_path.display());
+    }
+
+    // Create the policies sub-directory.
+    let policies_dir = dir.join("policies");
+    std::fs::create_dir_all(&policies_dir)
+        .with_context(|| format!("Cannot create directory: {}", policies_dir.display()))?;
+
+    // Write the default policy file if it does not already exist.
+    let policy_path = policies_dir.join("default.toml");
+    if policy_path.exists() {
+        println!("  exists  {}", policy_path.display());
+    } else {
+        std::fs::write(&policy_path, DEFAULT_POLICY_TOML)
+            .with_context(|| format!("Cannot write {}", policy_path.display()))?;
+        println!("  created {}", policy_path.display());
+    }
+
+    println!("\nAgentGate initialised. Edit the files above, then run `agentgate wrap -- <server>`.");
+    Ok(())
+}
+
+// ── Doctor ───────────────────────────────────────────────────────────────────
+
+fn run_doctor(config: &AgentGateConfig) {
+    let mut all_ok = true;
+
+    // 1. Config directory exists and is writable.
+    let dir = agentgate_dir();
+    let dir_ok = dir.exists() && is_writable(&dir);
+    print_check(dir_ok, &format!("Config directory: {}", dir.display()));
+    all_ok &= dir_ok;
+
+    // 2. Config file parses cleanly (if it exists).
+    let config_path = dir.join("config.toml");
+    if config_path.exists() {
+        let parse_ok = AgentGateConfig::load_toml(&config_path).is_ok();
+        print_check(parse_ok, &format!("config.toml is valid TOML: {}", config_path.display()));
+        all_ok &= parse_ok;
+    } else {
+        print_check(false, &format!("config.toml not found (run `agentgate init`): {}", config_path.display()));
+        all_ok = false;
+    }
+
+    // 3. Database path is writable (try creating the parent dir and touching a temp file).
+    let db_ok = check_db_writable(&config.db_path);
+    print_check(db_ok, &format!("DB path is writable: {}", config.db_path.display()));
+    all_ok &= db_ok;
+
+    // 4. Dashboard port (default 7070) is available.
+    let dash_port = config.dashboard_port.unwrap_or(7070);
+    let dash_ok = port_available(dash_port);
+    print_check(
+        dash_ok,
+        &format!("Dashboard port {dash_port} is available (or already in use by AgentGate)"),
+    );
+    // Port in use is a warning, not a hard failure — AgentGate itself may already be running.
+
+    // 5. Policy file parses cleanly (if configured).
+    if let Some(ref policy_path) = config.policy_path {
+        if policy_path.exists() {
+            let ok = agentgate_core::policy::PolicyEngine::load(policy_path).is_ok();
+            print_check(ok, &format!("Policy file is valid: {}", policy_path.display()));
+            all_ok &= ok;
+        } else {
+            print_check(
+                false,
+                &format!("Policy file not found: {}", policy_path.display()),
+            );
+            all_ok = false;
+        }
+    }
+
+    println!();
+    if all_ok {
+        println!("All checks passed.");
+    } else {
+        println!("One or more checks failed. Fix the issues above and re-run `agentgate doctor`.");
+        std::process::exit(1);
+    }
+}
+
+fn print_check(ok: bool, msg: &str) {
+    let mark = if ok { "[ok]" } else { "[!!]" };
+    println!("  {mark}  {msg}");
+}
+
+fn is_writable(path: &std::path::Path) -> bool {
+    // Attempt to create a temp file inside the directory.
+    let probe = path.join(".agentgate_write_probe");
+    match std::fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn check_db_writable(db_path: &std::path::Path) -> bool {
+    if let Some(parent) = db_path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+        is_writable(parent)
+    } else {
+        false
+    }
+}
+
+fn port_available(port: u16) -> bool {
+    std::net::TcpListener::bind(std::net::SocketAddr::from(([127, 0, 0, 1], port))).is_ok()
 }

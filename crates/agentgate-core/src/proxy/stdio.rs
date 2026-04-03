@@ -11,10 +11,10 @@ use crate::storage::{InvocationRecord, InvocationStatus, StorageWriter};
 use anyhow::{Context, Result};
 use axum::Router;
 use chrono::Utc;
+use dashmap::DashMap;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -28,7 +28,9 @@ struct PendingCall {
     started_at: Instant,
 }
 
-type PendingMap = Arc<Mutex<HashMap<String, PendingCall>>>;
+/// DashMap provides fine-grained sharded locking, avoiding the global bottleneck
+/// of a single Mutex when many inbound requests and responses race concurrently.
+type PendingMap = Arc<DashMap<String, PendingCall>>;
 
 pub struct StdioProxy {
     config: AgentGateConfig,
@@ -57,7 +59,7 @@ impl StdioProxy {
 
         let rate_limiter = Arc::new(RateLimiter::new(self.config.rate_limits.clone()));
         let circuit_breaker = Arc::new(CircuitBreaker::new(self.config.circuit_breaker.clone()));
-        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let pending: PendingMap = Arc::new(DashMap::new());
 
         if let Some(port) = self.config.metrics_port {
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -110,6 +112,9 @@ impl StdioProxy {
         let child_stdout = child.stdout.take().expect("stdout piped");
         let child_stderr = child.stderr.take().expect("stderr piped");
 
+        // Keep one storage clone for the flush-on-shutdown drain.
+        let storage_for_flush = storage.clone();
+
         let task_a = tokio::spawn(proxy_inbound(
             child_stdin,
             Arc::clone(&pending),
@@ -133,30 +138,47 @@ impl StdioProxy {
 
         let task_c = tokio::spawn(pipe_stderr(child_stderr));
 
-        let status = tokio::select! {
-            res = child.wait() => {
-                res.context("Failed to wait for child process")?
-            }
+        // `process::exit` is intentionally absent from the signal arms. Killing the
+        // child then returning normally lets the graceful shutdown below drain the
+        // storage channel before the process exits, preventing log holes.
+        let (status, signal) = tokio::select! {
+            res = child.wait() => (res.context("Failed to wait for child process")?, false),
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("Received Ctrl+C, terminating child");
                 let _ = child.kill().await;
-                std::process::exit(0);
+                let status = child.wait().await.unwrap_or_else(|_| {
+                    // Construct a zero exit status as a best-effort fallback.
+                    std::process::Command::new("true")
+                        .status()
+                        .unwrap()
+                });
+                (status, true)
             }
             _ = sigterm_signal() => {
                 tracing::info!("Received SIGTERM, terminating child");
                 let _ = child.kill().await;
-                std::process::exit(0);
+                let status = child.wait().await.unwrap_or_else(|_| {
+                    std::process::Command::new("true")
+                        .status()
+                        .unwrap()
+                });
+                (status, true)
             }
         };
 
         // task_a reads from stdin which never yields EOF while the agent is alive; abort it.
-        // task_b may have buffered responses to flush; give it a short grace window.
         task_a.abort();
+        // task_b may have buffered responses to flush.
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task_b).await;
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task_c).await;
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), stdout_writer).await;
+        // Drop the storage sender and wait for the background writer thread to drain all
+        // queued records before the process exits — prevents log holes on Ctrl+C / SIGTERM.
+        storage_for_flush
+            .flush_async(std::time::Duration::from_secs(3))
+            .await;
 
-        if !status.success() {
+        if signal || !status.success() {
             std::process::exit(status.code().unwrap_or(1));
         }
 
@@ -237,7 +259,7 @@ async fn proxy_inbound(
                             line.clone()
                         };
                         metrics::global().active_sessions.inc();
-                        pending.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                        pending.insert(
                             id_key(req),
                             PendingCall {
                                 tool_name,
@@ -341,11 +363,7 @@ fn flush_pending(
     };
 
     let key = resp.id.to_string();
-    let Some(call) = pending
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&key)
-    else {
+    let Some((_, call)) = pending.remove(&key) else {
         return original_line.to_string();
     };
 
@@ -389,7 +407,6 @@ fn flush_pending(
         (Some(raw_result), Some(engine)) => {
             let redacted = engine.redact_output(raw_result);
             let forward = if redacted != *raw_result {
-                // Reconstruct the JSON-RPC response with the redacted result.
                 let redacted_resp = JsonRpcResponse {
                     jsonrpc: resp.jsonrpc.clone(),
                     id: resp.id.clone(),
