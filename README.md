@@ -2,7 +2,7 @@
 
 **Nginx/Kong for AI agents — a transparent security & observability gateway for MCP tool calls.**
 
-AgentGate sits between AI coding agents (Claude Code, Cursor, Codex, Devin) and the MCP servers they call. It intercepts every `tools/call` invocation, enforces declarative TOML policies, rate-limits, and logs everything to a local SQLite database — with zero behavior change to the agent or server, and sub-millisecond overhead on the proxy hot path.
+AgentGate sits between AI coding agents (local LLMs via Ollama, llama.cpp, Claude Code, Cursor, Codex, Devin or agentic frameworks) and the MCP servers they call.. It intercepts every `tools/call` invocation, enforces declarative TOML policies, rate-limits, and logs everything to a local SQLite database — with zero behavior change to the agent or server, and sub-millisecond overhead on the proxy hot path.
 
 ```
 ┌──────────┐      ┌─────────────────────────────┐      ┌────────────┐
