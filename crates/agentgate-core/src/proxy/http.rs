@@ -123,9 +123,11 @@ async fn try_proxy(state: HttpState, req: Request) -> Result<Response> {
         .map(|p| p.to_string())
         .unwrap_or_else(|| "/".to_string());
     let in_headers = req.headers().clone();
-    let body_bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+    // 10 MB — reject oversized payloads to prevent memory exhaustion.
+    const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+    let body_bytes = axum::body::to_bytes(req.into_body(), MAX_BODY_SIZE)
         .await
-        .context("Failed to read request body")?;
+        .context("Request body too large or unreadable")?;
 
     // For POST requests, attempt JSON-RPC inspection and policy evaluation.
     if method == Method::POST {

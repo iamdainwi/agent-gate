@@ -13,7 +13,8 @@ use axum::{
 };
 use rust_embed::{Embed, RustEmbed};
 use serde_json::json;
-use tower_http::cors::{AllowHeaders, AllowMethods, CorsLayer};
+use axum::http::{header, Method};
+use tower_http::cors::CorsLayer;
 
 /// Embed the pre-built Next.js static export into the binary at compile time.
 ///
@@ -84,8 +85,8 @@ fn build_router(state: DashboardState, port: u16) -> Router {
                 .parse::<axum::http::HeaderValue>()
                 .expect("static origin"),
         ])
-        .allow_methods(AllowMethods::any())
-        .allow_headers(AllowHeaders::any());
+        .allow_methods([Method::GET, Method::PUT, Method::OPTIONS])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     let api = Router::new()
         .route("/api/invocations", get(api::get_invocations))

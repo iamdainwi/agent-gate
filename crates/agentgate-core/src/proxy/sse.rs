@@ -154,10 +154,16 @@ async fn try_pump_upstream_sse(
     let mut byte_stream = resp.bytes_stream();
     let mut buf = String::new();
     let mut current = ParsedSseEvent::default();
+    // Prevent memory exhaustion from a malicious upstream that never sends newlines.
+    const MAX_BUF_SIZE: usize = 4 * 1024 * 1024; // 4 MB
 
     while let Some(chunk) = byte_stream.next().await {
         let chunk = chunk.context("Upstream SSE stream error")?;
         buf.push_str(std::str::from_utf8(&chunk).context("Non-UTF8 SSE data")?);
+
+        if buf.len() > MAX_BUF_SIZE {
+            bail!("Upstream SSE buffer exceeded {MAX_BUF_SIZE} bytes without a newline");
+        }
 
         while let Some(nl) = buf.find('\n') {
             let line = buf[..nl].trim_end_matches('\r').to_string();

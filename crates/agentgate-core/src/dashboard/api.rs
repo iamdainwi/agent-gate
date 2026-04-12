@@ -54,7 +54,7 @@ fn db_err(e: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
     tracing::error!("DB error: {e}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({ "error": e.to_string() })),
+        Json(json!({ "error": "Internal server error" })),
     )
 }
 
@@ -90,15 +90,18 @@ pub async fn get_invocations(
             "SELECT id, timestamp, agent_id, session_id, server_name, tool_name,
                     arguments, result, latency_ms, status, policy_hit
              FROM tool_invocations {where_clause}
-             ORDER BY timestamp DESC LIMIT {limit} OFFSET {offset}"
+             ORDER BY timestamp DESC LIMIT ? OFFSET ?"
         );
 
         let mut stmt = conn.prepare(&sql)?;
+        // Parameterize LIMIT/OFFSET (appended after filter params) to prevent injection.
+        let limit_i64 = limit as i64;
+        let offset_i64 = offset as i64;
         let rows = match (&filter_tool, &filter_status) {
-            (Some(t), Some(s)) => stmt.query_map(rusqlite::params![t, s], row_to_record)?,
-            (Some(t), None) => stmt.query_map(rusqlite::params![t], row_to_record)?,
-            (None, Some(s)) => stmt.query_map(rusqlite::params![s], row_to_record)?,
-            (None, None) => stmt.query_map([], row_to_record)?,
+            (Some(t), Some(s)) => stmt.query_map(rusqlite::params![t, s, limit_i64, offset_i64], row_to_record)?,
+            (Some(t), None) => stmt.query_map(rusqlite::params![t, limit_i64, offset_i64], row_to_record)?,
+            (None, Some(s)) => stmt.query_map(rusqlite::params![s, limit_i64, offset_i64], row_to_record)?,
+            (None, None) => stmt.query_map(rusqlite::params![limit_i64, offset_i64], row_to_record)?,
         };
         rows.collect::<Result<Vec<_>, _>>().context("query")
     })

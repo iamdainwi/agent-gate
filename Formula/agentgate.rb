@@ -1,7 +1,7 @@
 class Agentgate < Formula
   desc "AI Agent Security & Observability Gateway for MCP servers"
   homepage "https://github.com/iamdainwi/agentgate"
-  version "0.1.0"
+  version "1.0.0"
   license "MIT"
 
   on_macos do
