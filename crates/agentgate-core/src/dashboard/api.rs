@@ -98,10 +98,19 @@ pub async fn get_invocations(
         let limit_i64 = limit as i64;
         let offset_i64 = offset as i64;
         let rows = match (&filter_tool, &filter_status) {
-            (Some(t), Some(s)) => stmt.query_map(rusqlite::params![t, s, limit_i64, offset_i64], row_to_record)?,
-            (Some(t), None) => stmt.query_map(rusqlite::params![t, limit_i64, offset_i64], row_to_record)?,
-            (None, Some(s)) => stmt.query_map(rusqlite::params![s, limit_i64, offset_i64], row_to_record)?,
-            (None, None) => stmt.query_map(rusqlite::params![limit_i64, offset_i64], row_to_record)?,
+            (Some(t), Some(s)) => stmt.query_map(
+                rusqlite::params![t, s, limit_i64, offset_i64],
+                row_to_record,
+            )?,
+            (Some(t), None) => {
+                stmt.query_map(rusqlite::params![t, limit_i64, offset_i64], row_to_record)?
+            }
+            (None, Some(s)) => {
+                stmt.query_map(rusqlite::params![s, limit_i64, offset_i64], row_to_record)?
+            }
+            (None, None) => {
+                stmt.query_map(rusqlite::params![limit_i64, offset_i64], row_to_record)?
+            }
         };
         rows.collect::<Result<Vec<_>, _>>().context("query")
     })

@@ -3,6 +3,7 @@ use super::state::DashboardState;
 use super::ws::ws_live_handler;
 use crate::metrics;
 use anyhow::Result;
+use axum::http::{header, Method};
 use axum::{
     extract::{Request, State},
     http::{HeaderMap, StatusCode},
@@ -13,7 +14,6 @@ use axum::{
 };
 use rust_embed::{Embed, RustEmbed};
 use serde_json::json;
-use axum::http::{header, Method};
 use tower_http::cors::CorsLayer;
 
 /// Embed the pre-built Next.js static export into the binary at compile time.
